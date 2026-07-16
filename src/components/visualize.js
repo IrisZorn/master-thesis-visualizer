@@ -1,6 +1,8 @@
 import * as d3 from "d3";
 
-export async function createMapViewer({ data, mapUrl, spriteUrls = {}, showCup: initialShowCup = true, showMug: initialShowMug = true, showDeath: initialShowDeath = true, showHit: initialShowHit = true}) {
+export async function createMapViewer({ data: providedData, curr_playthrough = null, aggr_players = null, mapUrl, spriteUrls = {}, showCup: initialShowCup = true, showMug: initialShowMug = true, showDeath: initialShowDeath = true, showHit: initialShowHit = true, showAggregate: initialShowAggregate = true}) {
+
+  const data = providedData ?? curr_playthrough;
 
   /* ---------------- LOAD IMAGE ---------------- */
 
@@ -64,6 +66,35 @@ export async function createMapViewer({ data, mapUrl, spriteUrls = {}, showCup: 
   feComp.appendChild(feFuncA);
   haloFilter.appendChild(feComp);
   defs.appendChild(haloFilter);
+
+  const enemyArrow = document.createElementNS(NS, 'marker');
+  enemyArrow.setAttribute('id', 'enemy-arrow');
+  enemyArrow.setAttribute('markerWidth', '4');
+  enemyArrow.setAttribute('markerHeight', '4');
+  enemyArrow.setAttribute('refX', '3.1');
+  enemyArrow.setAttribute('refY', '2');
+  enemyArrow.setAttribute('orient', 'auto');
+  enemyArrow.setAttribute('markerUnits', 'strokeWidth');
+  const enemyArrowPath = document.createElementNS(NS, 'path');
+  enemyArrowPath.setAttribute('d', 'M 0 0 L 4 2 L 0 4 z');
+  enemyArrowPath.setAttribute('fill', 'context-stroke');
+  enemyArrow.appendChild(enemyArrowPath);
+  defs.appendChild(enemyArrow);
+
+  const enemyArrowStart = document.createElementNS(NS, 'marker');
+  enemyArrowStart.setAttribute('id', 'enemy-arrow-start');
+  enemyArrowStart.setAttribute('markerWidth', '4');
+  enemyArrowStart.setAttribute('markerHeight', '4');
+  enemyArrowStart.setAttribute('refX', '0.9');
+  enemyArrowStart.setAttribute('refY', '2');
+  enemyArrowStart.setAttribute('orient', 'auto');
+  enemyArrowStart.setAttribute('markerUnits', 'strokeWidth');
+  const enemyArrowStartPath = document.createElementNS(NS, 'path');
+  enemyArrowStartPath.setAttribute('d', 'M 4 0 L 0 2 L 4 4 z');
+  enemyArrowStartPath.setAttribute('fill', 'context-stroke');
+  enemyArrowStart.appendChild(enemyArrowStartPath);
+  defs.appendChild(enemyArrowStart);
+
   mainSvg.appendChild(defs);
 
   const mainLayers = document.createElementNS(NS, "g");
@@ -107,10 +138,14 @@ export async function createMapViewer({ data, mapUrl, spriteUrls = {}, showCup: 
 
   /* ---------------- PLAYER PATHS ---------------- */
 
-  const cup = data[0]["3"];
-  const mug = data[0]["8"];
-  const cupDeath = data[0]["5"] || [];
-  const mugDeath = data[0]["9"] || [];
+  const cup = data[0]["3"] || [];
+  const mug = data[0]["8"] || [];
+  const enemyPathsByType = data[0]["enemy_paths"] || {};
+  const enemyAggregates = aggr_players?.enemies || {};
+  const aggCup = aggr_players?.["3"] || [];
+  const aggMug = aggr_players?.["8"] || [];
+  const cupDeathRaw = data[0]["5"] || [];
+  const mugDeathRaw = data[0]["9"] || [];
   const deathSprites = {
     C: spriteUrls.cupDeath,
     M: spriteUrls.mugDeath
@@ -119,18 +154,58 @@ export async function createMapViewer({ data, mapUrl, spriteUrls = {}, showCup: 
     C: spriteUrls.cupHit,
     M: spriteUrls.mugHit
   };
+  const playerMarkerRadius = 13;
+  const miniPlayerMarkerRadius = 15;
   // hit events: see constants_forest_follies.py (cuphead_hit='6', mugman_hit='10')
-  const cupHit = data[0]["6"] || [];
-  const mugHit = data[0]["10"] || [];
+  const cupHitRaw = data[0]["6"] || [];
+  const mugHitRaw = data[0]["10"] || [];
+  const enemySprites = {
+    "0": spriteUrls.acorn,
+    "11": spriteUrls.shroom,
+    "14": spriteUrls.spikyBulb,
+    "16": spriteUrls.toothy,
+    "17": spriteUrls.tulip,
+  };
+  const stationaryEnemyTypes = new Set(["11", "17"]);
+  const centeredGlyphEnemyTypes = new Set(["14", "16"]);
+  const aggregatedEnemyTypes = new Set(["14", "16"]);
+
+  function validTimedPoints(points) {
+    return (points || []).filter(point => point && point[2] != null && Number.isFinite(point[2]));
+  }
+
+  function partitionEvents(points, primaryPath, secondaryPath) {
+    const primaryAvailable = validTimedPoints(primaryPath);
+    const secondaryAvailable = validTimedPoints(secondaryPath);
+    const fallbackSource = validTimedPoints(points);
+
+    if (!fallbackSource.length) return { primary: [], secondary: [] };
+    if (!secondaryAvailable.length) return { primary: fallbackSource, secondary: [] };
+    if (!primaryAvailable.length) return { primary: [], secondary: fallbackSource };
+
+    return fallbackSource.reduce((accumulator, point) => {
+      const primaryDistance = Math.abs(primaryAvailable[findCurrentIndex(primaryAvailable, point[2])]?.[2] - point[2]);
+      const secondaryDistance = Math.abs(secondaryAvailable[findCurrentIndex(secondaryAvailable, point[2])]?.[2] - point[2]);
+      if (primaryDistance <= secondaryDistance) accumulator.primary.push(point);
+      else accumulator.secondary.push(point);
+      return accumulator;
+    }, { primary: [], secondary: [] });
+  }
+
+  const deathEvents = partitionEvents(cupDeathRaw.concat(mugDeathRaw), cup, mug);
+  const hitEvents = partitionEvents(cupHitRaw.concat(mugHitRaw), cup, mug);
+  const cupDeath = deathEvents.primary;
+  const mugDeath = deathEvents.secondary;
+  const cupHit = hitEvents.primary;
+  const mugHit = hitEvents.secondary;
 
   /* ---------------- TIME ---------------- */
 
   let currentTime = 0;
 
-  const maxTime = Math.max(
-    cup[cup.length - 1][2],
-    mug[mug.length - 1][2]
-  );
+  const cupMaxTime = cup.length ? cup[cup.length - 1][2] : 0;
+  const mugMaxTime = mug.length ? mug[mug.length - 1][2] : 0;
+  const maxTime = Math.max(cupMaxTime, mugMaxTime);
 
   /* ---------------- SLIDER ---------------- */
 
@@ -141,6 +216,24 @@ export async function createMapViewer({ data, mapUrl, spriteUrls = {}, showCup: 
   slider.step = 0.1;
   slider.value = 0;
   slider.style.width = "100%";
+
+  const sliderWrapper = document.createElement('div');
+  sliderWrapper.style.position = 'relative';
+  sliderWrapper.style.width = '100%';
+  sliderWrapper.style.boxSizing = 'border-box';
+  sliderWrapper.style.padding = '8px 0';
+
+  const sliderMarkers = document.createElement('div');
+  sliderMarkers.style.position = 'absolute';
+  sliderMarkers.style.left = '0';
+  sliderMarkers.style.right = '0';
+  sliderMarkers.style.top = '50%';
+  sliderMarkers.style.transform = 'translateY(-50%)';
+  sliderMarkers.style.height = '28px';
+  sliderMarkers.style.pointerEvents = 'none';
+  sliderMarkers.style.overflow = 'visible';
+
+  sliderWrapper.append(slider, sliderMarkers);
 
   /* ---------------- LAYER TOGGLES / POPUP LEGEND ---------------- */
   // Layer visibility flags (use small Toggle helper for clarity)
@@ -154,13 +247,15 @@ export async function createMapViewer({ data, mapUrl, spriteUrls = {}, showCup: 
   const showMugToggle = new Toggle(initialShowMug);
   const showDeathToggle = new Toggle(initialShowDeath);
   const showHitToggle = new Toggle(initialShowHit);
+  const showEnemyToggle = new Toggle(true);
+  const showAggregateToggle = new Toggle(initialShowAggregate);
 
-  function makeLegendGlyph(spriteUrl, backgroundColor) {
+  function makeLegendGlyph(spriteUrl, backgroundColor, borderColor = 'white') {
     const glyph = document.createElement('div');
     glyph.style.width = '28px';
     glyph.style.height = '34px';
     glyph.style.borderRadius = '6px';
-    glyph.style.border = '1px solid white';
+    glyph.style.border = `1px solid ${borderColor}`;
     glyph.style.boxSizing = 'border-box';
     glyph.style.background = backgroundColor;
     glyph.style.overflow = 'hidden';
@@ -197,6 +292,197 @@ export async function createMapViewer({ data, mapUrl, spriteUrls = {}, showCup: 
     for (let i = 0; i < path.length; i++) if (path[i][2] >= time) return i;
     return path.length - 1;
   }
+  function flattenEnemyPaths(pathsByType) {
+    return Object.entries(pathsByType).flatMap(([type, tracks]) =>
+      (tracks || []).map(track => ({
+        id: track.id ?? `${type}-${Math.random().toString(36).slice(2)}`,
+        type,
+        points: (track.points || []).filter(point => point && Number.isFinite(point[0]) && Number.isFinite(point[1]))
+      })).filter(track => track.points.length > 1)
+    );
+  }
+
+  const enemyPaths = flattenEnemyPaths(enemyPathsByType);
+  const activeEnemyTypes = new Set(Object.keys(enemyPathsByType || {}).filter(type => (enemyPathsByType[type] || []).length));
+
+  function getEnemyGlyphSource(enemyType) {
+    return enemySprites[enemyType] || spriteUrls.cupHit;
+  }
+
+  function getLastTimedPoint(points) {
+    const validPoints = validTimedPoints(points);
+    return validPoints.length ? validPoints[validPoints.length - 1] : null;
+  }
+
+  function pointAtFraction(points, fraction) {
+    const validPoints = (points || []).filter(point => point && Number.isFinite(point[0]) && Number.isFinite(point[1]));
+    if (!validPoints.length) return null;
+    if (validPoints.length === 1) return validPoints[0];
+
+    const clampedFraction = clamp(fraction, 0, 1);
+    const scaledIndex = clampedFraction * (validPoints.length - 1);
+    const lowerIndex = Math.floor(scaledIndex);
+    const upperIndex = Math.min(validPoints.length - 1, lowerIndex + 1);
+    const localFraction = scaledIndex - lowerIndex;
+    const startPoint = validPoints[lowerIndex];
+    const endPoint = validPoints[upperIndex];
+
+    return [
+      startPoint[0] + (endPoint[0] - startPoint[0]) * localFraction,
+      startPoint[1] + (endPoint[1] - startPoint[1]) * localFraction,
+      clampedFraction,
+    ];
+  }
+
+  function filterRecentPoints(points, minClusterSize = 2) {
+    const validPoints = validTimedPoints(points).filter(point => point[2] <= currentTime + WINDOW_DELTA);
+    if (validPoints.length < minClusterSize) return [];
+    return validPoints;
+  }
+
+  function hasRecentEnemyEvidence(tracks, minClusterSize = 2) {
+    return tracks.some(track => filterRecentPoints(track.points, minClusterSize).length >= minClusterSize);
+  }
+
+  function median(values) {
+    if (!values.length) return null;
+    const sorted = [...values].sort((left, right) => left - right);
+    const middle = Math.floor(sorted.length / 2);
+    return sorted.length % 2 === 0
+      ? (sorted[middle - 1] + sorted[middle]) / 2
+      : sorted[middle];
+  }
+
+  function smoothPolyline(points, windowSize = 5) {
+    const validPoints = (points || []).filter(point => point && Number.isFinite(point[0]) && Number.isFinite(point[1]));
+    if (validPoints.length < 3 || windowSize <= 1) return validPoints;
+
+    const radius = Math.floor(windowSize / 2);
+    return validPoints.map((point, index) => {
+      const windowPoints = validPoints.slice(Math.max(0, index - radius), Math.min(validPoints.length, index + radius + 1));
+      return [
+        d3.mean(windowPoints, sample => sample[0]),
+        d3.mean(windowPoints, sample => sample[1]),
+        point[2],
+      ];
+    });
+  }
+
+  function aggregateVerticalEnemyTracks(tracks) {
+    const verticalGroupingThreshold = 170;
+    const groupedTracks = [];
+
+    for (const track of tracks) {
+      const points = filterRecentPoints(track.points, 2);
+      if (points.length < 2) continue;
+
+      const xs = points.map(point => point[0]);
+      const ys = points.map(point => point[1]);
+      const centerX = median(xs);
+      const minY = Math.min(...ys);
+      const maxY = Math.max(...ys);
+      if (!Number.isFinite(centerX) || !Number.isFinite(minY) || !Number.isFinite(maxY)) continue;
+
+      const matchingGroup = groupedTracks.find(group => group.type === track.type && Math.abs(group.centerX - centerX) <= verticalGroupingThreshold);
+      if (matchingGroup) {
+        matchingGroup.centerXs.push(centerX);
+        matchingGroup.minY = Math.min(matchingGroup.minY, minY);
+        matchingGroup.maxY = Math.max(matchingGroup.maxY, maxY);
+        matchingGroup.ids.push(track.id);
+      } else {
+        groupedTracks.push({
+          centerX,
+          centerXs: [centerX],
+          minY,
+          maxY,
+          ids: [track.id],
+          type: track.type,
+        });
+      }
+    }
+
+    return groupedTracks.map((group, index) => {
+      const centerX = median(group.centerXs);
+      const basePoints = [
+        [centerX, group.minY, 0],
+        [centerX, (group.minY + group.maxY) / 2, 0.5],
+        [centerX, group.maxY, 1],
+      ];
+
+      return {
+        id: `enemy-merged-${group.type}-${index}`,
+        type: group.type,
+        points: smoothPolyline(basePoints, 3),
+      };
+    });
+  }
+
+  function buildEnemyVisuals() {
+    const visuals = { paths: [], glyphs: [], stationary: [] };
+    if (!showEnemyToggle.value) return visuals;
+
+    for (const [enemyType, aggregate] of Object.entries(enemyAggregates)) {
+      if (!aggregate) continue;
+      const liveTracks = enemyPathsByType[enemyType] || [];
+      const livePoints = liveTracks.flatMap(track => filterRecentPoints(track.points, stationaryEnemyTypes.has(enemyType) ? 3 : 2));
+      const hasRecentEvidence = hasRecentEnemyEvidence(liveTracks, stationaryEnemyTypes.has(enemyType) ? 3 : 2);
+      const isActive = livePoints.length > 0 || activeEnemyTypes.has(enemyType);
+      const stroke = isActive ? 'rgba(64, 224, 208, 0.9)' : 'rgba(148, 163, 184, 0.9)';
+      const fill = isActive ? 'rgba(64, 224, 208, 0.9)' : 'rgba(148, 163, 184, 0.8)';
+
+      if (aggregate.mode === 'aggregated-linear' && Array.isArray(aggregate.path) && aggregate.path.length > 1) {
+        if (aggregatedEnemyTypes.has(enemyType)) continue;
+        visuals.paths.push({ id: `enemy-agg-${enemyType}`, points: aggregate.path, stroke, width: 12, glow: true });
+        const glyphPoint = aggregatedEnemyTypes.has(enemyType)
+          ? pointAtFraction(aggregate.path, 0.5) || aggregate.path[1] || aggregate.path[0]
+          : pointAtFraction(aggregate.path, maxTime ? currentTime / maxTime : 0) || aggregate.path[0];
+        if (glyphPoint) visuals.glyphs.push({ id: `enemy-glyph-${enemyType}`, type: enemyType, x: glyphPoint[0], y: glyphPoint[1], color: fill });
+        continue;
+      }
+
+      if (aggregate.mode === 'stationary') {
+        for (const [index, anchor] of (aggregate.anchors || []).entries()) {
+          visuals.stationary.push({ id: `enemy-stationary-${enemyType}-${index}`, type: enemyType, x: anchor[0], y: anchor[1], color: fill, active: isActive });
+          visuals.glyphs.push({ id: `enemy-glyph-${enemyType}-${index}`, type: enemyType, x: anchor[0], y: anchor[1], color: fill });
+        }
+        continue;
+      }
+
+      if (aggregate.mode === 'full-path' && enemyType === '0') {
+        for (const track of liveTracks) {
+          const points = filterRecentPoints(track.points, 2);
+          if (points.length > 1) {
+            visuals.paths.push({ id: `enemy-live-${track.id}`, points, stroke: 'rgba(64, 224, 208, 0.9)', width: 5 });
+            const glyphPoint = getLastTimedPoint(points);
+            if (glyphPoint) visuals.glyphs.push({ id: `enemy-glyph-${track.id}`, type: enemyType, x: glyphPoint[0], y: glyphPoint[1], color: 'rgba(64, 224, 208, 0.9)' });
+          }
+        }
+      }
+    }
+
+    const centeredEnemyTracks = aggregateVerticalEnemyTracks(
+      enemyPaths.filter(track => centeredGlyphEnemyTypes.has(track.type))
+    );
+
+    for (const track of enemyPaths) {
+      if (stationaryEnemyTypes.has(track.type) || centeredGlyphEnemyTypes.has(track.type)) continue;
+      const points = filterRecentPoints(track.points, 2);
+      if (points.length > 1) {
+        visuals.paths.push({ id: `enemy-free-${track.id}`, points, stroke: 'rgba(64, 224, 208, 0.9)', width: 5 });
+        const glyphPoint = getLastTimedPoint(points);
+        if (glyphPoint) visuals.glyphs.push({ id: `enemy-glyph-live-${track.id}`, type: track.type, x: glyphPoint[0], y: glyphPoint[1], color: 'rgba(64, 224, 208, 0.9)' });
+      }
+    }
+
+    for (const track of centeredEnemyTracks) {
+      if (track.points.length <= 1) continue;
+      visuals.paths.push({ id: `enemy-free-${track.id}`, points: track.points, stroke: 'rgba(64, 224, 208, 0.9)', width: 8, glow: true, arrow: true });
+      const glyphPoint = pointAtFraction(track.points, 0.5) || track.points[1] || track.points[0];
+      if (glyphPoint) visuals.glyphs.push({ id: `enemy-glyph-centered-${track.id}`, type: track.type, x: glyphPoint[0], y: glyphPoint[1], color: 'rgba(64, 224, 208, 0.9)' });
+    }
+
+    return visuals;
+  }
 
   // compute segment opacity based on distance from currentTime
   const WINDOW_DELTA = 50;
@@ -225,6 +511,106 @@ export async function createMapViewer({ data, mapUrl, spriteUrls = {}, showCup: 
     if (hpClamped >= 3) return '#21c55d';
     if (hpClamped === 2) return '#f59e0b';
     return '#ef4444';
+  }
+
+  function sliderPercent(t) {
+    if (!maxTime) return 0;
+    return clamp((t / maxTime) * 100, 0, 100);
+  }
+
+  function markerKey(label, time) {
+    return `${label}:${time}`;
+  }
+
+  function setSliderMarkers() {
+    const markers = new Map();
+
+    function upsertMarker({ t, label, lane, color, kind, sprite, overlaySprite = null }) {
+      const key = markerKey(label, t);
+      const existing = markers.get(key);
+      if (!existing) {
+        markers.set(key, { t, label, lane, color, kind, sprite, overlaySprite });
+        return;
+      }
+
+      if (kind === 'death') {
+        existing.kind = existing.kind === 'hit' ? 'hit + death' : 'death';
+        existing.overlaySprite = sprite;
+        return;
+      }
+
+      existing.kind = existing.kind === 'death' ? 'hit + death' : 'hit';
+      existing.sprite = sprite;
+    }
+
+    if (showDeathToggle.value) {
+      for (const point of cupDeath) {
+        if (!point || point[2] == null) continue;
+        upsertMarker({ t: point[2], label: 'C', kind: 'death', color: '#d62828', sprite: deathSprites.C, lane: 1 });
+      }
+      for (const point of mugDeath) {
+        if (!point || point[2] == null) continue;
+        upsertMarker({ t: point[2], label: 'M', kind: 'death', color: '#2563eb', sprite: deathSprites.M, lane: 0 });
+      }
+    }
+
+    if (showHitToggle.value) {
+      for (const point of cupHit) {
+        if (!point || point[2] == null) continue;
+        upsertMarker({ t: point[2], label: 'C', kind: 'hit', color: '#d62828', sprite: hitSprites.C, lane: 1 });
+      }
+      for (const point of mugHit) {
+        if (!point || point[2] == null) continue;
+        upsertMarker({ t: point[2], label: 'M', kind: 'hit', color: '#2563eb', sprite: hitSprites.M, lane: 0 });
+      }
+    }
+
+    const markerList = Array.from(markers.values()).sort((left, right) => left.t - right.t);
+    sliderMarkers.replaceChildren();
+
+    for (const marker of markerList) {
+      const glyph = document.createElement('div');
+      glyph.style.position = 'absolute';
+      glyph.style.left = `${sliderPercent(marker.t)}%`;
+      glyph.style.top = marker.lane === 0 ? '-2px' : '14px';
+      glyph.style.width = '16px';
+      glyph.style.height = '16px';
+      glyph.style.transform = 'translateX(-50%)';
+      glyph.style.borderRadius = '50%';
+      glyph.style.border = '1px solid rgba(255,255,255,0.95)';
+      glyph.style.boxShadow = '0 1px 4px rgba(0,0,0,0.35)';
+      glyph.style.background = marker.color;
+      glyph.style.overflow = 'hidden';
+      glyph.style.display = 'flex';
+      glyph.style.alignItems = 'center';
+      glyph.style.justifyContent = 'center';
+      glyph.title = `${marker.label === 'C' ? 'Cuphead' : 'Mugman'} ${marker.kind} @ ${marker.t.toFixed(1)}`;
+
+      const img = document.createElement('img');
+      img.src = marker.sprite;
+      img.alt = `${marker.kind}`;
+      img.style.width = '100%';
+      img.style.height = '100%';
+      img.style.objectFit = 'cover';
+      img.style.display = 'block';
+
+      glyph.appendChild(img);
+
+      if (marker.overlaySprite) {
+        const overlay = document.createElement('img');
+        overlay.src = marker.overlaySprite;
+        overlay.alt = 'death';
+        overlay.style.position = 'absolute';
+        overlay.style.inset = '0';
+        overlay.style.width = '100%';
+        overlay.style.height = '100%';
+        overlay.style.objectFit = 'cover';
+        overlay.style.pointerEvents = 'none';
+        glyph.appendChild(overlay);
+      }
+
+      sliderMarkers.appendChild(glyph);
+    }
   }
 
   /* ---------------- RENDER (SVG + d3 joins) ---------------- */
@@ -428,6 +814,118 @@ export async function createMapViewer({ data, mapUrl, spriteUrls = {}, showCup: 
     // bind main segments (inner strokes) in the mainLayers so they stay on top
     const mainSel = d3.select(mainLayers);
 
+    const aggregatePaths = [];
+    if (showAggregateToggle.value && aggCup.length > 1) {
+      aggregatePaths.push({ id: 'agg-cup', points: aggCup, color: 'rgba(255, 0, 0, 0.35)', width: 10 });
+    }
+    if (showAggregateToggle.value && aggMug.length > 1) {
+      aggregatePaths.push({ id: 'agg-mug', points: aggMug, color: 'rgba(0, 0, 255, 0.35)', width: 10 });
+    }
+
+    const aggregateSel = mainSel.selectAll('.aggregate-path').data(aggregatePaths, d => d.id);
+    aggregateSel.join(
+      enter => enter.append('path').attr('class', 'aggregate-path')
+        .attr('d', d => makePathD(d.points))
+        .attr('fill', 'none')
+        .attr('stroke', d => d.color)
+        .attr('stroke-width', d => d.width)
+        .attr('stroke-linecap', 'round')
+        .attr('stroke-linejoin', 'round'),
+      update => update
+        .attr('d', d => makePathD(d.points))
+        .attr('stroke', d => d.color)
+        .attr('stroke-width', d => d.width),
+      exit => exit.remove()
+    );
+
+    const enemyVisuals = buildEnemyVisuals();
+
+    const enemyBackSel = d3.select(haloLayer);
+
+    const enemyPathSel = enemyBackSel.selectAll('.enemy-path').data(enemyVisuals.paths, d => d.id);
+    enemyPathSel.join(
+      enter => enter.append('path').attr('class', 'enemy-path')
+        .attr('d', d => makePathD(d.points))
+        .attr('fill', 'none')
+        .attr('stroke', d => d.stroke)
+        .attr('stroke-width', d => d.width)
+        .attr('marker-start', d => d.arrow ? 'url(#enemy-arrow-start)' : null)
+        .attr('marker-end', d => d.arrow ? 'url(#enemy-arrow)' : null)
+        .attr('stroke-linecap', 'round')
+        .attr('stroke-linejoin', 'round'),
+      update => update
+        .attr('d', d => makePathD(d.points))
+        .attr('stroke', d => d.stroke)
+        .attr('marker-start', d => d.arrow ? 'url(#enemy-arrow-start)' : null)
+        .attr('marker-end', d => d.arrow ? 'url(#enemy-arrow)' : null)
+        .attr('stroke-width', d => d.width),
+      exit => exit.remove()
+    );
+
+    const enemyStationarySel = enemyBackSel.selectAll('.enemy-stationary').data(enemyVisuals.stationary, d => d.id);
+    enemyStationarySel.join(
+      enter => enter.append('circle').attr('class', 'enemy-stationary')
+        .attr('cx', d => d.x)
+        .attr('cy', d => d.y)
+        .attr('r', 22)
+        .attr('fill', 'none')
+        .attr('stroke', d => d.color)
+        .attr('stroke-width', 6),
+      update => update
+        .attr('cx', d => d.x)
+        .attr('cy', d => d.y)
+        .attr('stroke', d => d.color),
+      exit => exit.remove()
+    );
+
+    const enemyGlyphSel = mainSel.selectAll('.enemy-glyph').data(enemyVisuals.glyphs, d => d.id);
+    enemyGlyphSel.join(
+      enter => {
+        const group = enter.append('g').attr('class', 'enemy-glyph');
+        group.append('rect')
+          .attr('class', 'enemy-glyph-badge')
+          .attr('x', -35)
+          .attr('y', -42)
+          .attr('width', 70)
+          .attr('height', 84)
+          .attr('rx', 12)
+          .attr('ry', 12)
+          .attr('stroke', 'white')
+          .attr('stroke-width', 2);
+        group.append('rect')
+          .attr('class', 'enemy-glyph-bg')
+          .attr('x', -27)
+          .attr('y', -34)
+          .attr('width', 54)
+          .attr('height', 68)
+          .attr('rx', 9)
+          .attr('ry', 9)
+          .attr('fill', 'rgba(255,255,255,0.16)');
+        group.append('foreignObject')
+          .attr('class', 'enemy-glyph-fo')
+          .attr('x', -27)
+          .attr('y', -34)
+          .attr('width', 54)
+          .attr('height', 68)
+          .html(`<div xmlns="http://www.w3.org/1999/xhtml" style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:12px;"><img class="enemy-glyph-sprite" style="width:100%;height:100%;object-fit:cover;display:block;" /></div>`);
+        return group;
+      },
+      update => update,
+      exit => exit.remove()
+    )
+      .attr('transform', d => `translate(${d.x}, ${d.y})`)
+      .each(function(d) {
+        const group = d3.select(this);
+        group.select('.enemy-glyph-badge').attr('fill', d.color);
+        group.select('.enemy-glyph-bg').attr('fill', 'rgba(255,255,255,0.16)');
+        const sprite = this.querySelector('.enemy-glyph-sprite');
+        if (sprite) {
+          sprite.setAttribute('src', getEnemyGlyphSource(d.type));
+          sprite.style.opacity = '1';
+          sprite.style.filter = 'none';
+        }
+      });
+
     const segSel = mainSel.selectAll('.segment').data(allSegs, d => d.id);
     segSel.join(
       enter => enter.append('line').attr('class','segment')
@@ -453,8 +951,8 @@ export async function createMapViewer({ data, mapUrl, spriteUrls = {}, showCup: 
     const displayMugY = isFiniteCoord(mugY) ? mugY : lastValidMugY;
 
     const players = [];
-    if (showCupToggle.value && isFiniteCoord(displayCupX) && isFiniteCoord(displayCupY)) players.push({id:'cup', x:displayCupX,y:displayCupY,color:'red',r:5});
-    if (showMugToggle.value && isFiniteCoord(displayMugX) && isFiniteCoord(displayMugY)) players.push({id:'mug', x:displayMugX,y:displayMugY,color:'blue',r:5});
+    if (showCupToggle.value && isFiniteCoord(displayCupX) && isFiniteCoord(displayCupY)) players.push({id:'cup', x:displayCupX,y:displayCupY,color:'red',r:playerMarkerRadius});
+    if (showMugToggle.value && isFiniteCoord(displayMugX) && isFiniteCoord(displayMugY)) players.push({id:'mug', x:displayMugX,y:displayMugY,color:'blue',r:playerMarkerRadius});
     const psel = mainSel.selectAll('.player').data(players, d=>d.id);
     psel.join(
       enter => enter.append('circle').attr('class','player')
@@ -613,52 +1111,45 @@ export async function createMapViewer({ data, mapUrl, spriteUrls = {}, showCup: 
     // minimap: draw small scaled paths and viewport rect
     const miniSel = d3.select(miniLayers);
 
-    function miniWindowPoints(points) {
-      return points
-        .filter(p => p && p[0] != null && Math.abs(p[2] - currentTime) <= WINDOW_DELTA)
-        .map(p => ({ x: p[0] * scaleX, y: p[1] * scaleY }));
+    const miniAggCupPoints = aggCup.filter(p => p && p[0] != null).map(p => ({ x: p[0] * scaleX, y: p[1] * scaleY }));
+    const miniAggMugPoints = aggMug.filter(p => p && p[0] != null).map(p => ({ x: p[0] * scaleX, y: p[1] * scaleY }));
+    const miniPlayers = [];
+    if (showCupToggle.value && isFiniteCoord(displayCupX) && isFiniteCoord(displayCupY)) {
+      miniPlayers.push({ id: 'mini-cup-player', x: displayCupX * scaleX, y: displayCupY * scaleY, color: 'red', r: miniPlayerMarkerRadius });
+    }
+    if (showMugToggle.value && isFiniteCoord(displayMugX) && isFiniteCoord(displayMugY)) {
+      miniPlayers.push({ id: 'mini-mug-player', x: displayMugX * scaleX, y: displayMugY * scaleY, color: 'blue', r: miniPlayerMarkerRadius });
     }
 
-    const miniCupPoints = cup.filter(p => p && p[0] != null).map(p => ({ x: p[0] * scaleX, y: p[1] * scaleY }));
-    const miniMugPoints = mug.filter(p => p && p[0] != null).map(p => ({ x: p[0] * scaleX, y: p[1] * scaleY }));
-    const miniCupWindowPoints = miniWindowPoints(cup);
-    const miniMugWindowPoints = miniWindowPoints(mug);
-
     function makePolyPoints(arr) { return arr.map(d=>`${d.x},${d.y}`).join(' '); }
+        const miniAggCup = miniSel.selectAll('.mini-agg-cup').data(showAggregateToggle.value && miniAggCupPoints.length > 1 ? [miniAggCupPoints] : []);
+        miniAggCup.join(
+          enter => enter.append('polyline').attr('class','mini-agg-cup')
+            .attr('points', makePolyPoints)
+            .attr('fill','none').attr('stroke','rgba(255,0,0,0.35)').attr('stroke-width',20),
+          update => update.attr('points', makePolyPoints).attr('stroke','rgba(255,0,0,0.35)').attr('stroke-width',20),
+          exit => exit.remove()
+        );
 
-    const miniCup = miniSel.selectAll('.mini-cup').data(showCupToggle.value ? [miniCupPoints] : []);
-    miniCup.join(
-      enter => enter.append('polyline').attr('class','mini-cup')
-        .attr('points', makePolyPoints)
-        .attr('fill','none').attr('stroke','red').attr('stroke-width',3),
-      update => update.attr('points', makePolyPoints).attr('stroke','red').attr('stroke-width',3),
-      exit => exit.remove()
-    );
+        const miniAggMug = miniSel.selectAll('.mini-agg-mug').data(showAggregateToggle.value && miniAggMugPoints.length > 1 ? [miniAggMugPoints] : []);
+        miniAggMug.join(
+          enter => enter.append('polyline').attr('class','mini-agg-mug')
+            .attr('points', makePolyPoints)
+            .attr('fill','none').attr('stroke','rgba(0,0,255,0.35)').attr('stroke-width',20),
+          update => update.attr('points', makePolyPoints).attr('stroke','rgba(0,0,255,0.35)').attr('stroke-width',20),
+          exit => exit.remove()
+        );
 
-    const miniMug = miniSel.selectAll('.mini-mug').data(showMugToggle.value ? [miniMugPoints] : []);
-    miniMug.join(
-      enter => enter.append('polyline').attr('class','mini-mug')
-        .attr('points', makePolyPoints)
-        .attr('fill','none').attr('stroke','blue').attr('stroke-width',3),
-      update => update.attr('points', makePolyPoints).attr('stroke','blue').attr('stroke-width',3),
-      exit => exit.remove()
-    );
-
-    const miniCupWindow = miniSel.selectAll('.mini-cup-window').data(showCupToggle.value && miniCupWindowPoints.length > 1 ? [miniCupWindowPoints] : []);
-    miniCupWindow.join(
-      enter => enter.append('polyline').attr('class','mini-cup-window')
-        .attr('points', makePolyPoints)
-        .attr('fill','none').attr('stroke','red').attr('stroke-width',6),
-      update => update.attr('points', makePolyPoints).attr('stroke','red').attr('stroke-width',6),
-      exit => exit.remove()
-    );
-
-    const miniMugWindow = miniSel.selectAll('.mini-mug-window').data(showMugToggle.value && miniMugWindowPoints.length > 1 ? [miniMugWindowPoints] : []);
-    miniMugWindow.join(
-      enter => enter.append('polyline').attr('class','mini-mug-window')
-        .attr('points', makePolyPoints)
-        .attr('fill','none').attr('stroke','blue').attr('stroke-width',6),
-      update => update.attr('points', makePolyPoints).attr('stroke','blue').attr('stroke-width',6),
+    const miniPlayerSel = miniSel.selectAll('.mini-player').data(miniPlayers, d => d.id);
+    miniPlayerSel.join(
+      enter => enter.append('circle').attr('class', 'mini-player')
+        .attr('cx', d => d.x).attr('cy', d => d.y).attr('r', d => d.r)
+        .attr('fill', d => d.color)
+        .attr('stroke', 'white')
+        .attr('stroke-width', 2),
+      update => update
+        .attr('cx', d => d.x).attr('cy', d => d.y).attr('r', d => d.r)
+        .attr('fill', d => d.color),
       exit => exit.remove()
     );
 
@@ -683,6 +1174,7 @@ export async function createMapViewer({ data, mapUrl, spriteUrls = {}, showCup: 
 
   /* ---------------- INITIAL RENDER ---------------- */
   render();
+  setSliderMarkers();
 
   /* ---------------- CONTAINER ---------------- */
   const container = document.createElement('div');
@@ -690,7 +1182,7 @@ export async function createMapViewer({ data, mapUrl, spriteUrls = {}, showCup: 
   container.style.flexDirection = 'column';
   container.style.gap = '10px';
 
-  container.append(miniSvg, mainSvg, slider);
+  container.append(miniSvg, mainSvg, sliderWrapper);
 
   // create main wrapper and move mainSvg inside it so legend won't overlap minimap
   const mainWrapper = document.createElement('div');
@@ -756,7 +1248,10 @@ export async function createMapViewer({ data, mapUrl, spriteUrls = {}, showCup: 
       setter(!getter());
       refreshRow();
       // re-render immediately
-      try { render(); } catch (e) { /* ignore */ }
+      try {
+        render();
+        setSliderMarkers();
+      } catch (e) { /* ignore */ }
     });
 
     refreshRow();
@@ -767,8 +1262,10 @@ export async function createMapViewer({ data, mapUrl, spriteUrls = {}, showCup: 
 
   leftLegend.appendChild(makeLegendRow('Cup', '#ff0000', () => showCupToggle.value, v => { showCupToggle.value = v; }));
   leftLegend.appendChild(makeLegendRow('Mug', '#0000ff', () => showMugToggle.value, v => { showMugToggle.value = v; }));
-  leftLegend.appendChild(makeLegendRow('Death', '#000000', () => showDeathToggle.value, v => { showDeathToggle.value = v; }, makeLegendGlyph(deathSprites.C, '#d62828')));
-  leftLegend.appendChild(makeLegendRow('Hit', '#000000', () => showHitToggle.value, v => { showHitToggle.value = v; }, makeLegendGlyph(hitSprites.C, '#d62828')))
+  leftLegend.appendChild(makeLegendRow('Enemies', '#40e0d0', () => showEnemyToggle.value, v => { showEnemyToggle.value = v; }, makeLegendGlyph(spriteUrls.toothy, 'rgba(64, 224, 208, 0.18)', '#40e0d0')));
+  leftLegend.appendChild(makeLegendRow('Aggregate', '#6b7280', () => showAggregateToggle.value, v => { showAggregateToggle.value = v; }));
+  leftLegend.appendChild(makeLegendRow('Death', '#000000', () => showDeathToggle.value, v => { showDeathToggle.value = v; }, makeLegendGlyph(deathSprites.C, 'transparent', 'black')));
+  leftLegend.appendChild(makeLegendRow('Hit', '#000000', () => showHitToggle.value, v => { showHitToggle.value = v; }, makeLegendGlyph(hitSprites.C, 'transparent', 'black')))
   mainWrapper.appendChild(leftLegend);
 
   return container;

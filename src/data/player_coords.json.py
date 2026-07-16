@@ -1,79 +1,54 @@
 import json
 import pickle
-import sys
 from pathlib import Path
 
-from PIL import Image
 import constants_forest_follies as const
-from helper import filter_points, extract_singular_points, remove_reconnecting_jumps
+from coords_transform import transform_run
 
 base = Path(__file__).parent
-pkl_path = base / "resources/forest_follies_hk_gamer_bro.pkl"
-is_coop = True
+play_data_dir = base / "resources/play_data"
+IS_COOP = True
 
-with open(pkl_path, "rb") as f:
-    point_dict = pickle.load(f)
 
-point_json = []
+def merge_to_cuphead_only(runs):
+    merged_runs = []
 
-for run in point_dict:
-    my_dict = {}
+    for run in runs:
+        merged_run = dict(run)
+        cup_points = list(merged_run.get(const.cuphead, []))
+        mug_points = list(merged_run.get(const.mugman, []))
+        cup_ghosts = list(merged_run.get(const.cuphead_ghost, []))
+        mug_ghosts = list(merged_run.get(const.mugman_ghost, []))
+        cup_hits = list(merged_run.get(const.cuphead_hit, []))
+        mug_hits = list(merged_run.get(const.mugman_hit, []))
 
-    real_cup_hits = extract_singular_points(run.get(const.cuphead_hit) or [], min_cluster_size=6)
-    real_mug_hits = extract_singular_points(run.get(const.mugman_hit) or [], min_cluster_size=6)
+        merged_run[const.cuphead] = sorted(cup_points + mug_points, key=lambda point: point[2])
+        merged_run[const.cuphead_ghost] = sorted(cup_ghosts + mug_ghosts, key=lambda point: point[2])
+        merged_run[const.cuphead_hit] = sorted(cup_hits + mug_hits, key=lambda point: point[2])
+        merged_run[const.mugman] = []
+        merged_run[const.mugman_ghost] = []
+        merged_run[const.mugman_hit] = []
 
-    cup = run.get(const.cuphead) or []
-    mug = run.get(const.mugman) or []
-    if not cup or not mug:
-        continue  # nothing to process
+        merged_runs.append(merged_run)
 
-    add_points = {
-        const.cuphead: [],
-        const.mugman: [],
+    return merged_runs
+
+
+def load_runs(pkl_path):
+    with open(pkl_path, "rb") as f:
+        point_dict = pickle.load(f)
+
+    runs = [transform_run(run) for run in point_dict]
+
+    if not IS_COOP:
+        runs = merge_to_cuphead_only(runs)
+
+    return runs
+
+
+if __name__ == "__main__":
+    playthroughs = {
+        pkl_path.stem: load_runs(pkl_path)
+        for pkl_path in sorted(play_data_dir.glob("*.pkl"))
     }
-
-    for char, values in run.items():
-        values = sorted(values, key=lambda t: t[2])
-        filtered_vals = values
-        if char == const.cuphead:
-            filtered_vals = filter_points(values, run[const.cuphead_ghost], real_cup_hits)
-            filtered_vals = remove_reconnecting_jumps(
-                filtered_vals,
-                jump_dist=150,
-                return_dist=180,
-                max_branch_points=70,
-                min_branch_points=3,
-                min_deviation=70,
-            )
-        elif char == const.mugman:
-            filtered_vals = filter_points(values, run[const.mugman_ghost], real_mug_hits)
-            filtered_vals = remove_reconnecting_jumps(
-                filtered_vals,
-                jump_dist=150,
-                return_dist=180,
-                max_branch_points=70,
-                min_branch_points=3,
-                min_deviation=70,
-            )
-        elif char == const.cuphead_ghost:
-            # creates one ghost glyph instead of a path
-            filtered_vals = extract_singular_points(values, min_cluster_size=8)
-            add_points[const.cuphead].extend(filtered_vals)
-        elif char == const.cuphead_hit:
-            filtered_vals = real_cup_hits
-            add_points[const.cuphead].extend(filtered_vals)
-        elif char == const.mugman_ghost:
-            filtered_vals = extract_singular_points(values, min_cluster_size=8)
-            add_points[const.mugman].extend(filtered_vals)
-        elif char == const.mugman_hit:
-            filtered_vals = real_mug_hits
-            add_points[const.mugman].extend(filtered_vals)
-
-        my_dict[char] = [(x, y, t) for x, y, t in filtered_vals]
-
-    for player in (const.cuphead, const.mugman):
-        my_dict[player].extend(add_points[player])
-        my_dict[player].sort(key=lambda t: t[2])
-    point_json.append(my_dict)
-
-print(json.dumps(point_json))
+    print(json.dumps(playthroughs))
