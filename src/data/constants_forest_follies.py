@@ -18,3 +18,16 @@ start = '15'
 toothy = '16'
 tulip = '17'
 tulip_bullet = '18'
+
+# spiky_bulb/toothy only ever move up and down on a fixed path; their true
+# range is only known by combining many playthroughs, so it's maintained
+# separately (see build_enemy_full_paths.py) instead of being recomputed here.
+FIXED_VERTICAL_ENEMIES = {
+    spiky_bulb,
+    toothy,
+}
+STATIONARY_ENEMIES = {
+    shroom,
+    tulip,
+    acorn_machine,
+}

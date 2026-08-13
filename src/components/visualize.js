@@ -1,6 +1,23 @@
 import * as d3 from "d3";
+import { createLevelConfig, parseEnemySizes } from "./level-config.js";
+import { Toggle, createLegendRow, createSliderMarkers, makeLegendGlyph } from "./viewer-controls.js";
+import { createEnemyVisualBuilder, getEnemyGlyphSize, getEnemyGlyphSource } from "./viewer-enemies.js";
+import { clamp, findCurrentIndex, flattenEnemyPaths, makePathD, validTimedPoints } from "./viewer-helpers.js";
 
-export async function createMapViewer({ data: providedData, curr_playthrough = null, aggr_players = null, mapUrl, spriteUrls = {}, showCup: initialShowCup = true, showMug: initialShowMug = true, showDeath: initialShowDeath = true, showHit: initialShowHit = true, showAggregate: initialShowAggregate = true}) {
+export async function createMapViewer({
+  data: providedData,
+  curr_playthrough = null,
+  aggr_players = null,
+  mapUrl,
+  spriteUrls = {},
+  enemySizesText = "",
+  levelConfig = createLevelConfig(),
+  showCup: initialShowCup = true,
+  showMug: initialShowMug = true,
+  showDeath: initialShowDeath = true,
+  showHit: initialShowHit = true,
+  showAggregate: initialShowAggregate = true,
+}) {
 
   const data = providedData ?? curr_playthrough;
 
@@ -16,12 +33,12 @@ export async function createMapViewer({ data: providedData, curr_playthrough = n
 
   /* ---------------- VIEWPORT ---------------- */
 
-  const viewportW = 2000;
+  const viewportW = levelConfig.viewportWidth;
   const viewportH = mapH;
 
   /* ---------------- MINIMAP ---------------- */
 
-  const minimapScale = 0.2;
+  const minimapScale = levelConfig.minimapScale;
   const miniW = mapW * minimapScale;
   const miniH = mapH * minimapScale;
 
@@ -138,14 +155,18 @@ export async function createMapViewer({ data: providedData, curr_playthrough = n
 
   /* ---------------- PLAYER PATHS ---------------- */
 
-  const cup = data[0]["3"] || [];
-  const mug = data[0]["8"] || [];
-  const enemyPathsByType = data[0]["enemy_paths"] || {};
+  const cup = data[0][levelConfig.playerTypes.cup] || [];
+  const mug = data[0][levelConfig.playerTypes.mug] || [];
   const enemyAggregates = aggr_players?.enemies || {};
+  // each tracked enemy type's per-run tracks live directly under
+  // data[0][type] as an array of point-arrays (one per enemy instance)
+  const enemyPathsByType = Object.fromEntries(
+    levelConfig.trackedEnemyTypes.map((type) => [type, data[0][type] || []])
+  );
   const aggCup = aggr_players?.["3"] || [];
   const aggMug = aggr_players?.["8"] || [];
-  const cupDeathRaw = data[0]["5"] || [];
-  const mugDeathRaw = data[0]["9"] || [];
+  const cupDeathRaw = data[0][levelConfig.playerTypes.cupDeath] || [];
+  const mugDeathRaw = data[0][levelConfig.playerTypes.mugDeath] || [];
   const deathSprites = {
     C: spriteUrls.cupDeath,
     M: spriteUrls.mugDeath
@@ -154,50 +175,37 @@ export async function createMapViewer({ data: providedData, curr_playthrough = n
     C: spriteUrls.cupHit,
     M: spriteUrls.mugHit
   };
-  const playerMarkerRadius = 13;
-  const miniPlayerMarkerRadius = 15;
-  // hit events: see constants_forest_follies.py (cuphead_hit='6', mugman_hit='10')
-  const cupHitRaw = data[0]["6"] || [];
-  const mugHitRaw = data[0]["10"] || [];
-  const enemySprites = {
-    "0": spriteUrls.acorn,
-    "11": spriteUrls.shroom,
-    "14": spriteUrls.spikyBulb,
-    "16": spriteUrls.toothy,
-    "17": spriteUrls.tulip,
+  const playerSprites = {
+    cup: spriteUrls.cup,
+    mug: spriteUrls.mug
   };
-  const stationaryEnemyTypes = new Set(["11", "17"]);
-  const centeredGlyphEnemyTypes = new Set(["14", "16"]);
-  const aggregatedEnemyTypes = new Set(["14", "16"]);
+  const playerGlyphSize = {
+    cup: { w: 60, h: 70 },
+    mug: { w: 68, h: 70 }
+  };
+  const miniPlayerMarkerRadius = 15;
+  const cupHitRaw = data[0][levelConfig.playerTypes.cupHit] || [];
+  const mugHitRaw = data[0][levelConfig.playerTypes.mugHit] || [];
+  const enemySprites = Object.fromEntries(
+    Object.entries(levelConfig.enemyGlyphSources).map(([type, spriteKey]) => [type, spriteUrls[spriteKey]])
+  );
+  const enemyGlyphSize = parseEnemySizes(enemySizesText, levelConfig.enemyNameToType);
+  const stationaryEnemyTypes = levelConfig.stationaryEnemyTypes;
+  const centeredGlyphEnemyTypes = levelConfig.centeredGlyphEnemyTypes;
+  const ENEMY_INSTANCE_X_THRESHOLD = levelConfig.enemyInstanceXThreshold;
+  const STATIONARY_INSTANCE_THRESHOLD = levelConfig.stationaryInstanceThreshold;
+  const WINDOW_DELTA = levelConfig.windowDelta;
+  const START_HP = levelConfig.startHp;
 
-  function validTimedPoints(points) {
-    return (points || []).filter(point => point && point[2] != null && Number.isFinite(point[2]));
-  }
-
-  function partitionEvents(points, primaryPath, secondaryPath) {
-    const primaryAvailable = validTimedPoints(primaryPath);
-    const secondaryAvailable = validTimedPoints(secondaryPath);
-    const fallbackSource = validTimedPoints(points);
-
-    if (!fallbackSource.length) return { primary: [], secondary: [] };
-    if (!secondaryAvailable.length) return { primary: fallbackSource, secondary: [] };
-    if (!primaryAvailable.length) return { primary: [], secondary: fallbackSource };
-
-    return fallbackSource.reduce((accumulator, point) => {
-      const primaryDistance = Math.abs(primaryAvailable[findCurrentIndex(primaryAvailable, point[2])]?.[2] - point[2]);
-      const secondaryDistance = Math.abs(secondaryAvailable[findCurrentIndex(secondaryAvailable, point[2])]?.[2] - point[2]);
-      if (primaryDistance <= secondaryDistance) accumulator.primary.push(point);
-      else accumulator.secondary.push(point);
-      return accumulator;
-    }, { primary: [], secondary: [] });
-  }
-
-  const deathEvents = partitionEvents(cupDeathRaw.concat(mugDeathRaw), cup, mug);
-  const hitEvents = partitionEvents(cupHitRaw.concat(mugHitRaw), cup, mug);
-  const cupDeath = deathEvents.primary;
-  const mugDeath = deathEvents.secondary;
-  const cupHit = hitEvents.primary;
-  const mugHit = hitEvents.secondary;
+  // cupDeathRaw/mugDeathRaw/cupHitRaw/mugHitRaw are already correctly split per player at the
+  // data layer (distinct cuphead_ghost/mugman_ghost, cuphead_hit/mugman_hit source types), so
+  // just validate them directly rather than re-deriving ownership from path proximity: both
+  // players progress through a level in lockstep, so proximity ties are common and previously
+  // always got broken in cup's favor, misattributing mug's hits/deaths to cup.
+  const cupDeath = validTimedPoints(cupDeathRaw);
+  const mugDeath = validTimedPoints(mugDeathRaw);
+  const cupHit = validTimedPoints(cupHitRaw);
+  const mugHit = validTimedPoints(mugHitRaw);
 
   /* ---------------- TIME ---------------- */
 
@@ -237,12 +245,6 @@ export async function createMapViewer({ data: providedData, curr_playthrough = n
 
   /* ---------------- LAYER TOGGLES / POPUP LEGEND ---------------- */
   // Layer visibility flags (use small Toggle helper for clarity)
-  class Toggle {
-    constructor(v=true){ this._v = !!v; this._listeners = []; }
-    get value(){ return this._v; }
-    set value(v){ this._v = !!v; this._listeners.forEach(fn=>fn(this._v)); }
-    oninput(fn){ this._listeners.push(fn); }
-  }
   const showCupToggle = new Toggle(initialShowCup);
   const showMugToggle = new Toggle(initialShowMug);
   const showDeathToggle = new Toggle(initialShowDeath);
@@ -250,242 +252,23 @@ export async function createMapViewer({ data: providedData, curr_playthrough = n
   const showEnemyToggle = new Toggle(true);
   const showAggregateToggle = new Toggle(initialShowAggregate);
 
-  function makeLegendGlyph(spriteUrl, backgroundColor, borderColor = 'white') {
-    const glyph = document.createElement('div');
-    glyph.style.width = '28px';
-    glyph.style.height = '34px';
-    glyph.style.borderRadius = '6px';
-    glyph.style.border = `1px solid ${borderColor}`;
-    glyph.style.boxSizing = 'border-box';
-    glyph.style.background = backgroundColor;
-    glyph.style.overflow = 'hidden';
-    glyph.style.display = 'flex';
-    glyph.style.alignItems = 'center';
-    glyph.style.justifyContent = 'center';
-
-    const inner = document.createElement('div');
-    inner.style.width = 'calc(100% - 8px)';
-    inner.style.height = 'calc(100% - 8px)';
-    inner.style.borderRadius = '4px';
-    inner.style.overflow = 'hidden';
-    inner.style.background = 'rgba(255,255,255,0.16)';
-    inner.style.display = 'flex';
-    inner.style.alignItems = 'center';
-    inner.style.justifyContent = 'center';
-
-    const img = document.createElement('img');
-    img.src = spriteUrl;
-    img.style.width = '100%';
-    img.style.height = '100%';
-    img.style.objectFit = 'cover';
-    img.style.display = 'block';
-
-    inner.appendChild(img);
-    glyph.appendChild(inner);
-    return glyph;
-  }
-
-
-  /* ---------------- HELPERS ---------------- */
-  function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
-  function findCurrentIndex(path, time) {
-    for (let i = 0; i < path.length; i++) if (path[i][2] >= time) return i;
-    return path.length - 1;
-  }
-  function flattenEnemyPaths(pathsByType) {
-    return Object.entries(pathsByType).flatMap(([type, tracks]) =>
-      (tracks || []).map(track => ({
-        id: track.id ?? `${type}-${Math.random().toString(36).slice(2)}`,
-        type,
-        points: (track.points || []).filter(point => point && Number.isFinite(point[0]) && Number.isFinite(point[1]))
-      })).filter(track => track.points.length > 1)
-    );
-  }
-
   const enemyPaths = flattenEnemyPaths(enemyPathsByType);
-  const activeEnemyTypes = new Set(Object.keys(enemyPathsByType || {}).filter(type => (enemyPathsByType[type] || []).length));
-
-  function getEnemyGlyphSource(enemyType) {
-    return enemySprites[enemyType] || spriteUrls.cupHit;
-  }
-
-  function getLastTimedPoint(points) {
-    const validPoints = validTimedPoints(points);
-    return validPoints.length ? validPoints[validPoints.length - 1] : null;
-  }
-
-  function pointAtFraction(points, fraction) {
-    const validPoints = (points || []).filter(point => point && Number.isFinite(point[0]) && Number.isFinite(point[1]));
-    if (!validPoints.length) return null;
-    if (validPoints.length === 1) return validPoints[0];
-
-    const clampedFraction = clamp(fraction, 0, 1);
-    const scaledIndex = clampedFraction * (validPoints.length - 1);
-    const lowerIndex = Math.floor(scaledIndex);
-    const upperIndex = Math.min(validPoints.length - 1, lowerIndex + 1);
-    const localFraction = scaledIndex - lowerIndex;
-    const startPoint = validPoints[lowerIndex];
-    const endPoint = validPoints[upperIndex];
-
-    return [
-      startPoint[0] + (endPoint[0] - startPoint[0]) * localFraction,
-      startPoint[1] + (endPoint[1] - startPoint[1]) * localFraction,
-      clampedFraction,
-    ];
-  }
-
-  function filterRecentPoints(points, minClusterSize = 2) {
-    const validPoints = validTimedPoints(points).filter(point => point[2] <= currentTime + WINDOW_DELTA);
-    if (validPoints.length < minClusterSize) return [];
-    return validPoints;
-  }
-
-  function hasRecentEnemyEvidence(tracks, minClusterSize = 2) {
-    return tracks.some(track => filterRecentPoints(track.points, minClusterSize).length >= minClusterSize);
-  }
-
-  function median(values) {
-    if (!values.length) return null;
-    const sorted = [...values].sort((left, right) => left - right);
-    const middle = Math.floor(sorted.length / 2);
-    return sorted.length % 2 === 0
-      ? (sorted[middle - 1] + sorted[middle]) / 2
-      : sorted[middle];
-  }
-
-  function smoothPolyline(points, windowSize = 5) {
-    const validPoints = (points || []).filter(point => point && Number.isFinite(point[0]) && Number.isFinite(point[1]));
-    if (validPoints.length < 3 || windowSize <= 1) return validPoints;
-
-    const radius = Math.floor(windowSize / 2);
-    return validPoints.map((point, index) => {
-      const windowPoints = validPoints.slice(Math.max(0, index - radius), Math.min(validPoints.length, index + radius + 1));
-      return [
-        d3.mean(windowPoints, sample => sample[0]),
-        d3.mean(windowPoints, sample => sample[1]),
-        point[2],
-      ];
-    });
-  }
-
-  function aggregateVerticalEnemyTracks(tracks) {
-    const verticalGroupingThreshold = 170;
-    const groupedTracks = [];
-
-    for (const track of tracks) {
-      const points = filterRecentPoints(track.points, 2);
-      if (points.length < 2) continue;
-
-      const xs = points.map(point => point[0]);
-      const ys = points.map(point => point[1]);
-      const centerX = median(xs);
-      const minY = Math.min(...ys);
-      const maxY = Math.max(...ys);
-      if (!Number.isFinite(centerX) || !Number.isFinite(minY) || !Number.isFinite(maxY)) continue;
-
-      const matchingGroup = groupedTracks.find(group => group.type === track.type && Math.abs(group.centerX - centerX) <= verticalGroupingThreshold);
-      if (matchingGroup) {
-        matchingGroup.centerXs.push(centerX);
-        matchingGroup.minY = Math.min(matchingGroup.minY, minY);
-        matchingGroup.maxY = Math.max(matchingGroup.maxY, maxY);
-        matchingGroup.ids.push(track.id);
-      } else {
-        groupedTracks.push({
-          centerX,
-          centerXs: [centerX],
-          minY,
-          maxY,
-          ids: [track.id],
-          type: track.type,
-        });
-      }
-    }
-
-    return groupedTracks.map((group, index) => {
-      const centerX = median(group.centerXs);
-      const basePoints = [
-        [centerX, group.minY, 0],
-        [centerX, (group.minY + group.maxY) / 2, 0.5],
-        [centerX, group.maxY, 1],
-      ];
-
-      return {
-        id: `enemy-merged-${group.type}-${index}`,
-        type: group.type,
-        points: smoothPolyline(basePoints, 3),
-      };
-    });
-  }
-
-  function buildEnemyVisuals() {
-    const visuals = { paths: [], glyphs: [], stationary: [] };
-    if (!showEnemyToggle.value) return visuals;
-
-    for (const [enemyType, aggregate] of Object.entries(enemyAggregates)) {
-      if (!aggregate) continue;
-      const liveTracks = enemyPathsByType[enemyType] || [];
-      const livePoints = liveTracks.flatMap(track => filterRecentPoints(track.points, stationaryEnemyTypes.has(enemyType) ? 3 : 2));
-      const hasRecentEvidence = hasRecentEnemyEvidence(liveTracks, stationaryEnemyTypes.has(enemyType) ? 3 : 2);
-      const isActive = livePoints.length > 0 || activeEnemyTypes.has(enemyType);
-      const stroke = isActive ? 'rgba(64, 224, 208, 0.9)' : 'rgba(148, 163, 184, 0.9)';
-      const fill = isActive ? 'rgba(64, 224, 208, 0.9)' : 'rgba(148, 163, 184, 0.8)';
-
-      if (aggregate.mode === 'aggregated-linear' && Array.isArray(aggregate.path) && aggregate.path.length > 1) {
-        if (aggregatedEnemyTypes.has(enemyType)) continue;
-        visuals.paths.push({ id: `enemy-agg-${enemyType}`, points: aggregate.path, stroke, width: 12, glow: true });
-        const glyphPoint = aggregatedEnemyTypes.has(enemyType)
-          ? pointAtFraction(aggregate.path, 0.5) || aggregate.path[1] || aggregate.path[0]
-          : pointAtFraction(aggregate.path, maxTime ? currentTime / maxTime : 0) || aggregate.path[0];
-        if (glyphPoint) visuals.glyphs.push({ id: `enemy-glyph-${enemyType}`, type: enemyType, x: glyphPoint[0], y: glyphPoint[1], color: fill });
-        continue;
-      }
-
-      if (aggregate.mode === 'stationary') {
-        for (const [index, anchor] of (aggregate.anchors || []).entries()) {
-          visuals.stationary.push({ id: `enemy-stationary-${enemyType}-${index}`, type: enemyType, x: anchor[0], y: anchor[1], color: fill, active: isActive });
-          visuals.glyphs.push({ id: `enemy-glyph-${enemyType}-${index}`, type: enemyType, x: anchor[0], y: anchor[1], color: fill });
-        }
-        continue;
-      }
-
-      if (aggregate.mode === 'full-path' && enemyType === '0') {
-        for (const track of liveTracks) {
-          const points = filterRecentPoints(track.points, 2);
-          if (points.length > 1) {
-            visuals.paths.push({ id: `enemy-live-${track.id}`, points, stroke: 'rgba(64, 224, 208, 0.9)', width: 5 });
-            const glyphPoint = getLastTimedPoint(points);
-            if (glyphPoint) visuals.glyphs.push({ id: `enemy-glyph-${track.id}`, type: enemyType, x: glyphPoint[0], y: glyphPoint[1], color: 'rgba(64, 224, 208, 0.9)' });
-          }
-        }
-      }
-    }
-
-    const centeredEnemyTracks = aggregateVerticalEnemyTracks(
-      enemyPaths.filter(track => centeredGlyphEnemyTypes.has(track.type))
-    );
-
-    for (const track of enemyPaths) {
-      if (stationaryEnemyTypes.has(track.type) || centeredGlyphEnemyTypes.has(track.type)) continue;
-      const points = filterRecentPoints(track.points, 2);
-      if (points.length > 1) {
-        visuals.paths.push({ id: `enemy-free-${track.id}`, points, stroke: 'rgba(64, 224, 208, 0.9)', width: 5 });
-        const glyphPoint = getLastTimedPoint(points);
-        if (glyphPoint) visuals.glyphs.push({ id: `enemy-glyph-live-${track.id}`, type: track.type, x: glyphPoint[0], y: glyphPoint[1], color: 'rgba(64, 224, 208, 0.9)' });
-      }
-    }
-
-    for (const track of centeredEnemyTracks) {
-      if (track.points.length <= 1) continue;
-      visuals.paths.push({ id: `enemy-free-${track.id}`, points: track.points, stroke: 'rgba(64, 224, 208, 0.9)', width: 8, glow: true, arrow: true });
-      const glyphPoint = pointAtFraction(track.points, 0.5) || track.points[1] || track.points[0];
-      if (glyphPoint) visuals.glyphs.push({ id: `enemy-glyph-centered-${track.id}`, type: track.type, x: glyphPoint[0], y: glyphPoint[1], color: 'rgba(64, 224, 208, 0.9)' });
-    }
-
-    return visuals;
-  }
+  const { buildEnemyVisuals, filterRecentPoints } = createEnemyVisualBuilder({
+    currentTimeProvider: () => currentTime,
+    windowDelta: WINDOW_DELTA,
+    enemyAggregates,
+    enemyPathsByType,
+    enemyPaths,
+    stationaryEnemyTypes,
+    centeredGlyphEnemyTypes,
+    neverFadeEnemyTypes: levelConfig.neverFadeEnemyTypes,
+    holdLastPositionEnemyTypes: levelConfig.holdLastPositionEnemyTypes,
+    enemyInstanceXThreshold: ENEMY_INSTANCE_X_THRESHOLD,
+    stationaryInstanceThreshold: STATIONARY_INSTANCE_THRESHOLD,
+    showEnemy: () => showEnemyToggle.value,
+  });
 
   // compute segment opacity based on distance from currentTime
-  const WINDOW_DELTA = 50;
   const FADE_DISTANCE = WINDOW_DELTA;
   function segmentOpacity(t1, t2) {
     const avg = (t1 + t2) / 2;
@@ -494,7 +277,6 @@ export async function createMapViewer({ data: providedData, curr_playthrough = n
   }
 
   // HP helpers (START_HP default 3)
-  const START_HP = 3;
   function hpAtTime(who, t) {
     const hits = who === 'cup' ? cupHit : mugHit;
     if (!hits || !hits.length) return START_HP;
@@ -513,105 +295,18 @@ export async function createMapViewer({ data: providedData, curr_playthrough = n
     return '#ef4444';
   }
 
-  function sliderPercent(t) {
-    if (!maxTime) return 0;
-    return clamp((t / maxTime) * 100, 0, 100);
-  }
-
-  function markerKey(label, time) {
-    return `${label}:${time}`;
-  }
-
-  function setSliderMarkers() {
-    const markers = new Map();
-
-    function upsertMarker({ t, label, lane, color, kind, sprite, overlaySprite = null }) {
-      const key = markerKey(label, t);
-      const existing = markers.get(key);
-      if (!existing) {
-        markers.set(key, { t, label, lane, color, kind, sprite, overlaySprite });
-        return;
-      }
-
-      if (kind === 'death') {
-        existing.kind = existing.kind === 'hit' ? 'hit + death' : 'death';
-        existing.overlaySprite = sprite;
-        return;
-      }
-
-      existing.kind = existing.kind === 'death' ? 'hit + death' : 'hit';
-      existing.sprite = sprite;
-    }
-
-    if (showDeathToggle.value) {
-      for (const point of cupDeath) {
-        if (!point || point[2] == null) continue;
-        upsertMarker({ t: point[2], label: 'C', kind: 'death', color: '#d62828', sprite: deathSprites.C, lane: 1 });
-      }
-      for (const point of mugDeath) {
-        if (!point || point[2] == null) continue;
-        upsertMarker({ t: point[2], label: 'M', kind: 'death', color: '#2563eb', sprite: deathSprites.M, lane: 0 });
-      }
-    }
-
-    if (showHitToggle.value) {
-      for (const point of cupHit) {
-        if (!point || point[2] == null) continue;
-        upsertMarker({ t: point[2], label: 'C', kind: 'hit', color: '#d62828', sprite: hitSprites.C, lane: 1 });
-      }
-      for (const point of mugHit) {
-        if (!point || point[2] == null) continue;
-        upsertMarker({ t: point[2], label: 'M', kind: 'hit', color: '#2563eb', sprite: hitSprites.M, lane: 0 });
-      }
-    }
-
-    const markerList = Array.from(markers.values()).sort((left, right) => left.t - right.t);
-    sliderMarkers.replaceChildren();
-
-    for (const marker of markerList) {
-      const glyph = document.createElement('div');
-      glyph.style.position = 'absolute';
-      glyph.style.left = `${sliderPercent(marker.t)}%`;
-      glyph.style.top = marker.lane === 0 ? '-2px' : '14px';
-      glyph.style.width = '16px';
-      glyph.style.height = '16px';
-      glyph.style.transform = 'translateX(-50%)';
-      glyph.style.borderRadius = '50%';
-      glyph.style.border = '1px solid rgba(255,255,255,0.95)';
-      glyph.style.boxShadow = '0 1px 4px rgba(0,0,0,0.35)';
-      glyph.style.background = marker.color;
-      glyph.style.overflow = 'hidden';
-      glyph.style.display = 'flex';
-      glyph.style.alignItems = 'center';
-      glyph.style.justifyContent = 'center';
-      glyph.title = `${marker.label === 'C' ? 'Cuphead' : 'Mugman'} ${marker.kind} @ ${marker.t.toFixed(1)}`;
-
-      const img = document.createElement('img');
-      img.src = marker.sprite;
-      img.alt = `${marker.kind}`;
-      img.style.width = '100%';
-      img.style.height = '100%';
-      img.style.objectFit = 'cover';
-      img.style.display = 'block';
-
-      glyph.appendChild(img);
-
-      if (marker.overlaySprite) {
-        const overlay = document.createElement('img');
-        overlay.src = marker.overlaySprite;
-        overlay.alt = 'death';
-        overlay.style.position = 'absolute';
-        overlay.style.inset = '0';
-        overlay.style.width = '100%';
-        overlay.style.height = '100%';
-        overlay.style.objectFit = 'cover';
-        overlay.style.pointerEvents = 'none';
-        glyph.appendChild(overlay);
-      }
-
-      sliderMarkers.appendChild(glyph);
-    }
-  }
+  const setSliderMarkers = createSliderMarkers({
+    sliderMarkers,
+    maxTime,
+    showDeath: () => showDeathToggle.value,
+    showHit: () => showHitToggle.value,
+    cupDeath,
+    mugDeath,
+    cupHit,
+    mugHit,
+    deathSprites,
+    hitSprites,
+  });
 
   /* ---------------- RENDER (SVG + d3 joins) ---------------- */
   // keep last known good positions so encountering null/None samples doesn't blow up the camera
@@ -629,30 +324,33 @@ export async function createMapViewer({ data: providedData, curr_playthrough = n
     const cupX = cupSample[0], cupY = cupSample[1];
     const mugX = mugSample[0], mugY = mugSample[1];
 
-    const cupTime = cupSample[2] || 0;
-    const mugTime = mugSample[2] || 0;
-
     // update last-valid coordinates only when samples are numeric
     if (isFiniteCoord(cupX) && isFiniteCoord(cupY)) { lastValidCupX = cupX; lastValidCupY = cupY; }
     if (isFiniteCoord(mugX) && isFiniteCoord(mugY)) { lastValidMugX = mugX; lastValidMugY = mugY; }
 
-    // pick which player to follow based on most recent timestamp, but fallback to last-valid when needed
-    let followX = null, followY = null;
-    if (mugTime > cupTime) {
-      followX = isFiniteCoord(mugX) ? mugX : lastValidMugX;
-      followY = isFiniteCoord(mugY) ? mugY : lastValidMugY;
-    } else {
-      followX = isFiniteCoord(cupX) ? cupX : lastValidCupX;
-      followY = isFiniteCoord(cupY) ? cupY : lastValidCupY;
-    }
+    // follow the midpoint of both players' current (or last-known) position instead of
+    // switching between them: their samples aren't time-synced, so picking "whichever has
+    // the more recent timestamp" flickers between cup/mug on essentially every frame
+    const cupFollowX = isFiniteCoord(cupX) ? cupX : lastValidCupX;
+    const cupFollowY = isFiniteCoord(cupY) ? cupY : lastValidCupY;
+    const mugFollowX = isFiniteCoord(mugX) ? mugX : lastValidMugX;
+    const mugFollowY = isFiniteCoord(mugY) ? mugY : lastValidMugY;
 
-    // fallback to the other player's last-valid position if chosen follow is invalid
-    if (!isFiniteCoord(followX) || !isFiniteCoord(followY)) {
-      if (mugTime > cupTime) {
-        if (isFiniteCoord(lastValidCupX) && isFiniteCoord(lastValidCupY)) { followX = lastValidCupX; followY = lastValidCupY; }
-      } else {
-        if (isFiniteCoord(lastValidMugX) && isFiniteCoord(lastValidMugY)) { followX = lastValidMugX; followY = lastValidMugY; }
-      }
+    // exclude a player once they have no more samples for the rest of the run (final death /
+    // recording end) so the camera doesn't keep averaging in a frozen corpse position; while
+    // currentTime is still within their range, a null sample is a temporary down (revivable
+    // ghost), so lastValid keeps them in the average as intended
+    const cupHasFollow = currentTime <= cupMaxTime && isFiniteCoord(cupFollowX) && isFiniteCoord(cupFollowY);
+    const mugHasFollow = currentTime <= mugMaxTime && isFiniteCoord(mugFollowX) && isFiniteCoord(mugFollowY);
+
+    let followX = null, followY = null;
+    if (cupHasFollow && mugHasFollow) {
+      followX = (cupFollowX + mugFollowX) / 2;
+      followY = (cupFollowY + mugFollowY) / 2;
+    } else if (cupHasFollow) {
+      followX = cupFollowX; followY = cupFollowY;
+    } else if (mugHasFollow) {
+      followX = mugFollowX; followY = mugFollowY;
     }
 
     // if still not valid, keep the last camera position
@@ -749,13 +447,6 @@ export async function createMapViewer({ data: providedData, curr_playthrough = n
       return groups;
     }
 
-    function makePathD(points) {
-      const validPoints = points.filter(point => Array.isArray(point) && Number.isFinite(point[0]) && Number.isFinite(point[1]));
-      if (!validPoints.length) return '';
-      const [firstPoint, ...rest] = validPoints;
-      return [`M ${firstPoint[0]} ${firstPoint[1]}`, ...rest.map(point => `L ${point[0]} ${point[1]}`)].join(' ');
-    }
-
     const haloGroups = [];
     if (showCupToggle.value) haloGroups.push(...buildHpTrailGroups(cupSegs));
     if (showMugToggle.value) haloGroups.push(...buildHpTrailGroups(mugSegs));
@@ -849,6 +540,7 @@ export async function createMapViewer({ data: providedData, curr_playthrough = n
         .attr('fill', 'none')
         .attr('stroke', d => d.stroke)
         .attr('stroke-width', d => d.width)
+        .attr('stroke-opacity', d => d.opacity ?? 1)
         .attr('marker-start', d => d.arrow ? 'url(#enemy-arrow-start)' : null)
         .attr('marker-end', d => d.arrow ? 'url(#enemy-arrow)' : null)
         .attr('stroke-linecap', 'round')
@@ -856,6 +548,7 @@ export async function createMapViewer({ data: providedData, curr_playthrough = n
       update => update
         .attr('d', d => makePathD(d.points))
         .attr('stroke', d => d.stroke)
+        .attr('stroke-opacity', d => d.opacity ?? 1)
         .attr('marker-start', d => d.arrow ? 'url(#enemy-arrow-start)' : null)
         .attr('marker-end', d => d.arrow ? 'url(#enemy-arrow)' : null)
         .attr('stroke-width', d => d.width),
@@ -907,7 +600,18 @@ export async function createMapViewer({ data: providedData, curr_playthrough = n
           .attr('y', -34)
           .attr('width', 54)
           .attr('height', 68)
-          .html(`<div xmlns="http://www.w3.org/1999/xhtml" style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:12px;"><img class="enemy-glyph-sprite" style="width:100%;height:100%;object-fit:cover;display:block;" /></div>`);
+          .html(`<div xmlns="http://www.w3.org/1999/xhtml" style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:12px;"><img class="enemy-glyph-sprite" style="width:100%;height:100%;object-fit:contain;display:block;" /></div>`);
+        // debug: track index, so a glyph on screen can be matched back to its entry in the
+        // python-side track list (e.g. daisy[12]) without guessing from position alone
+        group.append('text')
+          .attr('class', 'enemy-glyph-debug-label')
+          .attr('text-anchor', 'middle')
+          .attr('font-size', 20)
+          .attr('font-weight', 'bold')
+          .attr('fill', 'white')
+          .attr('stroke', 'black')
+          .attr('stroke-width', 3)
+          .attr('paint-order', 'stroke');
         return group;
       },
       update => update,
@@ -916,12 +620,31 @@ export async function createMapViewer({ data: providedData, curr_playthrough = n
       .attr('transform', d => `translate(${d.x}, ${d.y})`)
       .each(function(d) {
         const group = d3.select(this);
-        group.select('.enemy-glyph-badge').attr('fill', d.color);
-        group.select('.enemy-glyph-bg').attr('fill', 'rgba(255,255,255,0.16)');
+        const { w, h } = getEnemyGlyphSize(d.type, enemyGlyphSize, levelConfig.defaultGlyphSize);
+        group.select('.enemy-glyph-badge')
+          .attr('fill', d.color)
+          .attr('x', -(w + 16) / 2)
+          .attr('y', -(h + 16) / 2)
+          .attr('width', w + 16)
+          .attr('height', h + 16);
+        group.select('.enemy-glyph-bg')
+          .attr('fill', 'rgba(255,255,255,0.16)')
+          .attr('x', -w / 2)
+          .attr('y', -h / 2)
+          .attr('width', w)
+          .attr('height', h);
+        group.select('.enemy-glyph-fo')
+          .attr('x', -w / 2)
+          .attr('y', -h / 2)
+          .attr('width', w)
+          .attr('height', h);
+        group.select('.enemy-glyph-debug-label')
+          .attr('y', -(h + 16) / 2 - 6)
+          .text(d.label != null ? d.label : '');
         const sprite = this.querySelector('.enemy-glyph-sprite');
         if (sprite) {
-          sprite.setAttribute('src', getEnemyGlyphSource(d.type));
-          sprite.style.opacity = '1';
+          sprite.setAttribute('src', getEnemyGlyphSource(d.type, enemySprites, spriteUrls, levelConfig.enemySpritesFallbackKey));
+          sprite.style.opacity = String(d.opacity ?? 1);
           sprite.style.filter = 'none';
         }
       });
@@ -951,16 +674,22 @@ export async function createMapViewer({ data: providedData, curr_playthrough = n
     const displayMugY = isFiniteCoord(mugY) ? mugY : lastValidMugY;
 
     const players = [];
-    if (showCupToggle.value && isFiniteCoord(displayCupX) && isFiniteCoord(displayCupY)) players.push({id:'cup', x:displayCupX,y:displayCupY,color:'red',r:playerMarkerRadius});
-    if (showMugToggle.value && isFiniteCoord(displayMugX) && isFiniteCoord(displayMugY)) players.push({id:'mug', x:displayMugX,y:displayMugY,color:'blue',r:playerMarkerRadius});
+    if (showCupToggle.value && isFiniteCoord(displayCupX) && isFiniteCoord(displayCupY)) players.push({id:'cup', x:displayCupX, y:displayCupY, sprite: playerSprites.cup, w: playerGlyphSize.cup.w, h: playerGlyphSize.cup.h});
+    if (showMugToggle.value && isFiniteCoord(displayMugX) && isFiniteCoord(displayMugY)) players.push({id:'mug', x:displayMugX, y:displayMugY, sprite: playerSprites.mug, w: playerGlyphSize.mug.w, h: playerGlyphSize.mug.h});
     const psel = mainSel.selectAll('.player').data(players, d=>d.id);
     psel.join(
-      enter => enter.append('circle').attr('class','player')
-        .attr('cx', d=>d.x).attr('cy', d=>d.y).attr('r', d=>d.r)
-        .attr('fill', d=>d.color),
-      update => update.attr('cx', d=>d.x).attr('cy', d=>d.y),
+      enter => enter.append('image').attr('class','player')
+        .attr('href', d=>d.sprite)
+        .attr('xlink:href', d=>d.sprite)
+        .attr('preserveAspectRatio', 'xMidYMid meet')
+        .attr('width', d=>d.w).attr('height', d=>d.h)
+        .attr('x', d=>d.x - d.w / 2).attr('y', d=>d.y - d.h / 2),
+      update => update
+        .attr('width', d=>d.w).attr('height', d=>d.h)
+        .attr('x', d=>d.x - d.w / 2).attr('y', d=>d.y - d.h / 2),
       exit => exit.remove()
-    );
+    )
+      .each(function() { this.parentNode?.appendChild(this); });
 
     // deaths + hits: fade with timestamp like segments
     function eventOpacity(t) { return clamp(1 - Math.abs(t - currentTime) / FADE_DISTANCE, 0, 1); }
@@ -1212,60 +941,23 @@ export async function createMapViewer({ data: providedData, curr_playthrough = n
   leftLegend.style.flexDirection = 'column';
   leftLegend.style.gap = '6px';
 
-  function makeLegendRow(label, color, getter, setter, glyphNode) {
-    const row = document.createElement('div');
-    row.style.display = 'flex';
-    row.style.alignItems = 'center';
-    row.style.gap = '8px';
-    row.style.cursor = 'pointer';
-    row.style.userSelect = 'none';
-
-    const swatch = glyphNode ?? document.createElement('div');
-    if (!glyphNode) {
-      swatch.style.width = '14px';
-      swatch.style.height = '14px';
-      swatch.style.background = color;
-      swatch.style.borderRadius = '2px';
-      swatch.style.border = '1px solid #666';
+  const rerenderFromControls = () => {
+    try {
+      render();
+      setSliderMarkers();
+    } catch (error) {
+      // ignore UI refresh failures from control clicks
     }
+  };
 
-    const txt = document.createElement('div');
-    txt.textContent = label;
-
-    function refreshRow() {
-      if (getter()) {
-        txt.style.textDecoration = 'none';
-        swatch.style.opacity = '1';
-        txt.style.opacity = '1';
-      } else {
-        txt.style.textDecoration = 'line-through';
-        swatch.style.opacity = '0.35';
-        txt.style.opacity = '0.5';
-      }
-    }
-
-    row.addEventListener('click', () => {
-      setter(!getter());
-      refreshRow();
-      // re-render immediately
-      try {
-        render();
-        setSliderMarkers();
-      } catch (e) { /* ignore */ }
-    });
-
-    refreshRow();
-    row.appendChild(swatch);
-    row.appendChild(txt);
-    return row;
-  }
-
-  leftLegend.appendChild(makeLegendRow('Cup', '#ff0000', () => showCupToggle.value, v => { showCupToggle.value = v; }));
-  leftLegend.appendChild(makeLegendRow('Mug', '#0000ff', () => showMugToggle.value, v => { showMugToggle.value = v; }));
-  leftLegend.appendChild(makeLegendRow('Enemies', '#40e0d0', () => showEnemyToggle.value, v => { showEnemyToggle.value = v; }, makeLegendGlyph(spriteUrls.toothy, 'rgba(64, 224, 208, 0.18)', '#40e0d0')));
-  leftLegend.appendChild(makeLegendRow('Aggregate', '#6b7280', () => showAggregateToggle.value, v => { showAggregateToggle.value = v; }));
-  leftLegend.appendChild(makeLegendRow('Death', '#000000', () => showDeathToggle.value, v => { showDeathToggle.value = v; }, makeLegendGlyph(deathSprites.C, 'transparent', 'black')));
-  leftLegend.appendChild(makeLegendRow('Hit', '#000000', () => showHitToggle.value, v => { showHitToggle.value = v; }, makeLegendGlyph(hitSprites.C, 'transparent', 'black')))
+  leftLegend.appendChild(createLegendRow({ label: 'Cup', color: '#ff0000', getter: () => showCupToggle.value, setter: v => { showCupToggle.value = v; }, onChange: rerenderFromControls }));
+  leftLegend.appendChild(createLegendRow({ label: 'Mug', color: '#0000ff', getter: () => showMugToggle.value, setter: v => { showMugToggle.value = v; }, onChange: rerenderFromControls }));
+  const enemyLegendSpriteKey = levelConfig.enemyLegendSpriteKey
+    ?? Object.values(levelConfig.enemyGlyphSources).find((spriteKey) => spriteUrls[spriteKey]);
+  leftLegend.appendChild(createLegendRow({ label: 'Enemies', color: '#40e0d0', getter: () => showEnemyToggle.value, setter: v => { showEnemyToggle.value = v; }, glyphNode: makeLegendGlyph(enemyLegendSpriteKey ? spriteUrls[enemyLegendSpriteKey] : hitSprites.C, 'rgba(64, 224, 208, 0.18)', '#40e0d0'), onChange: rerenderFromControls }));
+  leftLegend.appendChild(createLegendRow({ label: 'Aggregate', color: '#6b7280', getter: () => showAggregateToggle.value, setter: v => { showAggregateToggle.value = v; }, onChange: rerenderFromControls }));
+  leftLegend.appendChild(createLegendRow({ label: 'Death', color: '#000000', getter: () => showDeathToggle.value, setter: v => { showDeathToggle.value = v; }, glyphNode: makeLegendGlyph(deathSprites.C, 'transparent', 'black'), onChange: rerenderFromControls }));
+  leftLegend.appendChild(createLegendRow({ label: 'Hit', color: '#000000', getter: () => showHitToggle.value, setter: v => { showHitToggle.value = v; }, glyphNode: makeLegendGlyph(hitSprites.C, 'transparent', 'black'), onChange: rerenderFromControls }));
   mainWrapper.appendChild(leftLegend);
 
   return container;

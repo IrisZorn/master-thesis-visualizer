@@ -1,0 +1,95 @@
+const DEFAULT_LEVEL_CONFIG = {
+  playerTypes: {
+    cup: "3",
+    mug: "8",
+    cupDeath: "5",
+    mugDeath: "9",
+    cupHit: "6",
+    mugHit: "10",
+  },
+  enemyGlyphSources: {
+    "11": "shroom",
+    "14": "spikyBulb",
+    "16": "toothy",
+    "17": "tulip",
+    "7": "daisy",
+    "2": "blueberry",
+    "0": "acorn",
+    "1": "acornMachine",
+  },
+  enemyNameToType: {
+    shroom: "11",
+    spiky_bulb: "14",
+    toothy: "16",
+    tulip: "17",
+    daisy: "7",
+    blueberry: "2",
+    acorn: "0",
+    acorn_machine: "1",
+  },
+  stationaryEnemyTypes: ["11", "17", "1"],
+  centeredGlyphEnemyTypes: ["14", "16"],
+  // toothy can never actually leave the level (it just patrols a fixed vertical path), so a
+  // detection gap means it's temporarily undetected, not gone -- unlike other enemies it should
+  // stay fully colored instead of greying/fading out while "inactive".
+  neverFadeEnemyTypes: ["16"],
+  // fixed-path enemies that stay put where they were last seen instead of returning to the
+  // bottom of their path once they've been undetected for a while (see FIXED_PATH_MAX_HOLD in
+  // viewer-enemies.js) -- spiky_bulb holds its position rather than resting at the bottom.
+  holdLastPositionEnemyTypes: ["14"],
+  // enemy types with per-run live tracks under data[0][type] (an array of
+  // point-arrays, one per enemy instance) rather than an aggregate/cache;
+  // matches coords_transform.py's ENEMY_KEYS
+  trackedEnemyTypes: ["0", "14", "16", "2", "7", "11", "17", "1"],
+  enemyInstanceXThreshold: 170,
+  // matches build_enemy_full_paths.py's STATIONARY_DISTANCE_THRESHOLD: the distance within
+  // which a live shroom/tulip track is considered the same physical instance as an anchor
+  stationaryInstanceThreshold: 200,
+  startHp: 3,
+  viewportWidth: 2000,
+  minimapScale: 0.2,
+  windowDelta: 50,
+  defaultGlyphSize: { w: 68, h: 68 },
+  enemySpritesFallbackKey: "cupHit",
+  enemyLegendSpriteKey: null,
+};
+
+export function createLevelConfig(overrides = {}) {
+  return {
+    ...DEFAULT_LEVEL_CONFIG,
+    ...overrides,
+    playerTypes: {
+      ...DEFAULT_LEVEL_CONFIG.playerTypes,
+      ...(overrides.playerTypes || {}),
+    },
+    enemyGlyphSources: {
+      ...DEFAULT_LEVEL_CONFIG.enemyGlyphSources,
+      ...(overrides.enemyGlyphSources || {}),
+    },
+    enemyNameToType: {
+      ...DEFAULT_LEVEL_CONFIG.enemyNameToType,
+      ...(overrides.enemyNameToType || {}),
+    },
+    stationaryEnemyTypes: new Set(overrides.stationaryEnemyTypes || DEFAULT_LEVEL_CONFIG.stationaryEnemyTypes),
+    centeredGlyphEnemyTypes: new Set(overrides.centeredGlyphEnemyTypes || DEFAULT_LEVEL_CONFIG.centeredGlyphEnemyTypes),
+    neverFadeEnemyTypes: new Set(overrides.neverFadeEnemyTypes || DEFAULT_LEVEL_CONFIG.neverFadeEnemyTypes),
+    holdLastPositionEnemyTypes: new Set(overrides.holdLastPositionEnemyTypes || DEFAULT_LEVEL_CONFIG.holdLastPositionEnemyTypes),
+    enemyLegendSpriteKey: overrides.enemyLegendSpriteKey ?? DEFAULT_LEVEL_CONFIG.enemyLegendSpriteKey,
+  };
+}
+
+export function parseEnemySizes(text, enemyNameToType) {
+  const sizes = {};
+  for (const rawLine of (text || "").split("\n")) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const [name, rest] = line.split("=").map((value) => value.trim());
+    const type = enemyNameToType[name];
+    if (!type || !rest) continue;
+    const [wStr, hStr] = rest.split(",").map((value) => value.trim());
+    const w = Number(wStr);
+    const h = Number(hStr ?? wStr);
+    if (Number.isFinite(w) && Number.isFinite(h)) sizes[type] = { w, h };
+  }
+  return sizes;
+}

@@ -7,8 +7,7 @@ from coords_transform import transform_run
 
 base = Path(__file__).parent
 play_data_dir = base / "resources/play_data"
-IS_COOP = True
-
+COOP_RATIO_THRESHOLD = 20
 
 def merge_to_cuphead_only(runs):
     merged_runs = []
@@ -38,9 +37,13 @@ def load_runs(pkl_path):
     with open(pkl_path, "rb") as f:
         point_dict = pickle.load(f)
 
+    total_cup_points = sum(len(run.get(const.cuphead) or []) for run in point_dict)
+    total_mug_points = sum(len(run.get(const.mugman) or []) for run in point_dict)
+    is_coop = total_cup_points/total_mug_points < COOP_RATIO_THRESHOLD
+
     runs = [transform_run(run) for run in point_dict]
 
-    if not IS_COOP:
+    if not is_coop:
         runs = merge_to_cuphead_only(runs)
 
     return runs

@@ -12,12 +12,50 @@ def distance(p1, p2):
     return math.sqrt(dx*dx + dy*dy)
 
 
+def path_efficiency(points, start, end):
+    # ratio of net displacement to total distance travelled: close to 1 for a trajectory that
+    # commits to a direction (even slowly), close to 0 for jitter that wanders in place. Using
+    # net displacement alone can't tell those apart, since slow-but-real movement and bounded
+    # noise can cover a similar net distance over a fixed window.
+    net = distance(points[start], points[end])
+    total = sum(distance(points[i], points[i + 1]) for i in range(start, end))
+    return net / total if total > 0 else 0
+
+
+def find_stable_start(points, max_dist, recovery_points, progress_window=30, min_efficiency=0.12):
+    # points[0] would otherwise be trusted unconditionally with nothing earlier to validate
+    # it against. When the detector hasn't locked on yet at the start of a recording, that
+    # seeds the trail with a bogus point later connected to the real path by one giant jump.
+    # A single bad point is caught by requiring a run of recovery_points points that move
+    # normally frame-to-frame (the same stability check used for mid-stream glitch recovery
+    # below) -- but a whole noisy cluster (e.g. an intro/idle pose) can itself be locally
+    # stable for much longer than that while going nowhere, so also require that the
+    # candidate actually goes somewhere over a longer lookahead before accepting it.
+    max_start = len(points) - recovery_points
+    fallback = None
+
+    for start in range(max_start + 1):
+        if not all(distance(points[j], points[j + 1]) <= max_dist for j in range(start, start + recovery_points - 1)):
+            continue
+        if fallback is None:
+            fallback = start
+
+        end = min(start + progress_window, len(points)) - 1
+        if end <= start:
+            return start
+        if path_efficiency(points, start, end) >= min_efficiency:
+            return start
+
+    return fallback if fallback is not None else 0
+
+
 def filter_points(points, ghost_points, hit_points, max_dist=200, big_dist=700, recovery_points=8):
     if len(points) < 2:
         return points
 
-    filtered = [points[0]]
-    i = 1
+    start = find_stable_start(points, max_dist, recovery_points)
+    filtered = [points[start]]
+    i = start + 1
 
     while i < len(points):
         prev = filtered[-1]
@@ -117,94 +155,125 @@ def extract_singular_points(vals, time_thresh=200, dist_thresh=700, min_cluster_
     return deduped
 
 
-def detect_reconnecting_jump(
+def remove_single_point_spikes(points, min_jump=50, max_reconnect=60, max_spike_points=5):
+    """
+    Drop short runs of up to max_spike_points points that jump far from the path and land
+    back close to where they left off a few frames later -- the short-branch case
+    remove_reconnecting_jumps can't catch, since that function requires a multi-point branch
+    (min_branch_points) to avoid mistaking brief-but-real movement for noise. A spike this
+    short has no such ambiguity for these enemies: they don't move fast enough for a round
+    trip of min_jump+ within a couple of frames to be real, so it's always the detector
+    glitching onto something else briefly. Shorter spikes are preferred over longer ones when
+    both would qualify, since that removes the fewest points needed to explain the jump.
+    """
+    if len(points) < 3:
+        return list(points)
+
+    valid_indices = [index for index, point in enumerate(points) if point[0] is not None]
+    keep = [True] * len(points)
+    anchor_pos = 0
+
+    while anchor_pos < len(valid_indices) - 2:
+        anchor_point = points[valid_indices[anchor_pos]]
+        removed_spike_len = 0
+
+        for spike_len in range(1, max_spike_points + 1):
+            reconnect_pos = anchor_pos + spike_len + 1
+            if reconnect_pos >= len(valid_indices):
+                break
+
+            spike_positions = range(anchor_pos + 1, reconnect_pos)
+            spike_points = [points[valid_indices[p]] for p in spike_positions]
+            reconnect_point = points[valid_indices[reconnect_pos]]
+
+            if distance(anchor_point, spike_points[0]) < min_jump:
+                continue
+            if distance(spike_points[-1], reconnect_point) < min_jump:
+                continue
+            if distance(anchor_point, reconnect_point) > max_reconnect:
+                continue
+
+            for p in spike_positions:
+                keep[valid_indices[p]] = False
+            removed_spike_len = spike_len
+            break
+
+        anchor_pos += removed_spike_len + 1 if removed_spike_len else 1
+
+    return [point for index, point in enumerate(points) if keep[index]]
+
+
+def cluster_points_by_distance(points, distance_threshold=120):
+    valid_points = [point for point in points if point and point[0] is not None and point[1] is not None]
+    clusters = []
+
+    for point in valid_points:
+        assigned = None
+        for cluster in clusters:
+            anchor = cluster[0]
+            if distance(anchor, point) <= distance_threshold:
+                assigned = cluster
+                break
+
+        if assigned is None:
+            clusters.append([point])
+        else:
+            assigned.append(point)
+
+    return clusters
+
+
+def remove_reconnecting_jumps(
     points,
-    jump_dist=180,
-    return_dist=120,
-    max_branch_points=40,
-    min_branch_points=2,
-    min_deviation=80,
+    jump_dist=150,
+    max_branch_points=70,
+    min_branch_points=3,
+    min_deviation=70,
 ):
     """
-    Detect a path segment that suddenly jumps away from its current course and
-    reconnects soon after near the point it departed from.
-
-    Returns a dictionary describing the first detected branch, or None if no
-    such pattern is found.
+    Remove path segments that suddenly jump away from the current course and
+    reconnect soon after near the point they departed from, collapsing each
+    detected branch down to just its anchor and reconnect point. None-marker
+    points (death markers) are always kept.
     """
-    valid_points = [point for point in points if point[0] is not None]
-    if len(valid_points) < 4:
-        return None
+    valid_indices = [index for index, point in enumerate(points) if point[0] is not None]
+    if len(valid_indices) < 4:
+        return list(points)
 
-    for anchor_index in range(len(valid_points) - (min_branch_points + 1)):
-        anchor = valid_points[anchor_index]
-        departure = valid_points[anchor_index + 1]
+    keep = [True] * len(points)
+    anchor_pos = 0
+
+    while anchor_pos < len(valid_indices) - (min_branch_points + 1):
+        anchor = points[valid_indices[anchor_pos]]
+        departure = points[valid_indices[anchor_pos + 1]]
 
         if distance(anchor, departure) < jump_dist:
+            anchor_pos += 1
             continue
 
-        search_end = min(len(valid_points), anchor_index + max_branch_points + 2)
+        search_end = min(len(valid_indices), anchor_pos + max_branch_points + 2)
+        reconnect_pos = None
 
-        for reconnect_index in range(anchor_index + min_branch_points + 2, search_end):
-            reconnect = valid_points[reconnect_index]
+        for candidate_pos in range(anchor_pos + min_branch_points + 2, search_end):
+            candidate = points[valid_indices[candidate_pos]]
 
-            if distance(anchor, reconnect) > return_dist:
+            if distance(anchor, candidate) > jump_dist:
                 continue
 
-            branch = valid_points[anchor_index + 1:reconnect_index]
-            if len(branch) < min_branch_points:
+            branch_positions = range(anchor_pos + 1, candidate_pos)
+            branch_points = [points[valid_indices[p]] for p in branch_positions]
+            if len(branch_points) < min_branch_points:
                 continue
 
-            max_deviation = max(distance(anchor, point) for point in branch)
+            max_deviation = max(distance(anchor, point) for point in branch_points)
             if max_deviation < min_deviation:
                 continue
 
-            return {
-                "anchor_index": anchor_index,
-                "departure_index": anchor_index + 1,
-                "reconnect_index": reconnect_index,
-                "anchor": anchor,
-                "departure": departure,
-                "reconnect": reconnect,
-                "branch_points": branch,
-                "max_deviation": max_deviation,
-            }
+            reconnect_pos = candidate_pos
+            for p in branch_positions:
+                keep[valid_indices[p]] = False
+            break
 
-    return None
+        anchor_pos = reconnect_pos if reconnect_pos is not None else anchor_pos + 1
 
-
-def remove_reconnecting_jumps(points, **kwargs):
-    cleaned = list(points)
-
-    while True:
-        detection = detect_reconnecting_jump(cleaned, **kwargs)
-        if detection is None:
-            return cleaned
-
-        anchor = detection["anchor"]
-        reconnect = detection["reconnect"]
-        skipping = False
-        reduced = []
-
-        for point in cleaned:
-            if point[0] is None:
-                reduced.append(point)
-                continue
-
-            if not skipping and point == anchor:
-                reduced.append(point)
-                skipping = True
-                continue
-
-            if skipping:
-                if point == reconnect:
-                    reduced.append(point)
-                    skipping = False
-                continue
-
-            reduced.append(point)
-
-        if len(reduced) == len(cleaned):
-            return cleaned
-
-        cleaned = reduced
+    return [point for index, point in enumerate(points) if keep[index]]
