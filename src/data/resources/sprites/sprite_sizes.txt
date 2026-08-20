@@ -12,9 +12,6 @@ blueberry=100,120
 
 #TODO: look at clustering
 #TODO: shooting arrows
-#TODO: check playthroughs with multiple reruns -> run overlay? Problem time difference
-
-#TODO: look at enemy clustering
 
 #TODO: go to other levels
 

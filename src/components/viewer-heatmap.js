@@ -1,13 +1,18 @@
 import * as d3 from "d3";
 
-// Single-hue teal ramp, light -> dark, stepped around the live enemy turquoise (#40e0d0) so the
-// density field reads as part of the same "enemy" colour family rather than a fourth entity.
-// Lightness is monotonic (relative luminance 0.86 -> 0.10), and against the other things on
-// screen it stays clear of both floors: worst pair vs cup red / mug blue is 40.4 normal-vision
-// and 21.5 CVD (OKLab dE x100). The deliberate trade is against the enemy turquoise itself --
-// field and live tracks share a hue, so the two are told apart by form (a flat wash under
-// everything vs. a bright stroke and glyph on top), not by colour.
-export const HEATMAP_COLORS = ["#d5f6f0", "#a5eae0", "#5fd8c8", "#1fa595", "#0b6258"];
+// Teal ramp, light -> dark, stepped around the live enemy turquoise (#40e0d0) so the density
+// field reads as part of the same "enemy" colour family rather than a fourth entity. Lightness
+// is monotonic (relative luminance 0.89 -> 0.15, so it still reads correctly as a sequential
+// scale), but unlike a pure single-hue ramp the hue itself drifts from teal toward blue as it
+// darkens (HSL hue 172 -> 182) -- the hottest spots read as a deeper blue-teal, not just a darker
+// copy of the lightest step. Against the other things on screen it stays clear of both floors:
+// worst pair vs cup red / mug blue is 29.7 normal-vision / 8.3 CVD (OKLab dE x100, tritan-limited
+// by the hue drift toward mug's blue -- 182 was chosen as the bluest end-hue that still clears
+// the 8 target without needing the "legal only with secondary encoding" exception). The
+// deliberate trade is against the enemy turquoise itself -- field and live tracks share a hue
+// family, so the two are told apart by form (a flat wash under everything vs. a bright stroke
+// and glyph on top), not by colour.
+export const HEATMAP_COLORS = ["#e3f7f4", "#a0e7e1", "#59d1dc", "#14a5e3", "#10A6FF"];
 
 // How many nested contour bands the field is cut into. High on purpose: an attention-heatmap
 // look comes from a tight concentric falloff around each hotspot, and with only a handful of
@@ -32,7 +37,14 @@ const BAND_QUANTILE_END = 0.99;
 // the edges of the bins the python side happened to pick. This -- not the bin size -- is what
 // caps how large a blob can grow, so it is kept small in absolute map pixels (radius x
 // ENEMY_DENSITY_CELL_SIZE = ~19px): a fine grid smoothed hard would just reproduce a coarse one.
-const BLUR_RADIUS = 1.2;
+// This only smooths the *geometry* -- each contour band is still a flat-fill polygon, so the
+// color/opacity still jumps hard at every ring boundary regardless of how smooth the curve is.
+const DATA_BLUR_RADIUS = 1.2;
+// A second, larger blur applied to the *rendered* bands themselves (as an SVG filter on the
+// heatmap layer, in visualize.js) -- this is what actually removes the ring edges, by averaging
+// each pixel with its neighbours across band boundaries, rather than just spacing the same hard
+// edges further apart. In the same grid-cell units as DATA_BLUR_RADIUS and the contour geometry.
+export const BAND_BLUR_RADIUS = 0.5;
 
 const colorAt = d3.piecewise(d3.interpolateRgb, HEATMAP_COLORS);
 
@@ -50,7 +62,7 @@ function computeBands(density) {
     values[row * cols + col] = count;
   }
 
-  d3.blur2({ data: values, width: cols, height: rows }, BLUR_RADIUS);
+  d3.blur2({ data: values, width: cols, height: rows }, DATA_BLUR_RADIUS);
 
   // Thresholds by quantile over the occupied cells, not linearly over the value range: a
   // stationary enemy sits in a single cell for thousands of frames across the aggregate, so

@@ -2,7 +2,7 @@ import * as d3 from "d3";
 import { createLevelConfig, parseEnemySizes } from "./level-config.js";
 import { Toggle, createLegendRow, createSliderMarkers, makeLegendGlyph, makeLegendGradientGlyph } from "./viewer-controls.js";
 import { createEnemyVisualBuilder, getEnemyGlyphSize, getEnemyGlyphSource } from "./viewer-enemies.js";
-import { HEATMAP_COLORS, createEnemyHeatmapBuilder } from "./viewer-heatmap.js";
+import { BAND_BLUR_RADIUS, HEATMAP_COLORS, createEnemyHeatmapBuilder } from "./viewer-heatmap.js";
 import { clamp, findCurrentIndex, flattenEnemyPaths, makePathD, validTimedPoints } from "./viewer-helpers.js";
 
 export async function createMapViewer({
@@ -70,6 +70,7 @@ export async function createMapViewer({
   // and main layers, so switching it on never obscures the run being scrubbed
   const heatmapLayer = document.createElementNS(NS, 'g');
   heatmapLayer.setAttribute('class', 'heatmap-layer');
+  heatmapLayer.setAttribute('filter', 'url(#heat-blur)');
   heatmapLayer.style.pointerEvents = 'none';
   mainSvg.appendChild(heatmapLayer);
 
@@ -92,6 +93,25 @@ export async function createMapViewer({
   feComp.appendChild(feFuncA);
   haloFilter.appendChild(feComp);
   defs.appendChild(haloFilter);
+
+  // blurs the rendered heatmap bands themselves (not just the density data behind them, which
+  // viewer-heatmap.js already smooths before contouring): each band is still a flat-fill polygon,
+  // so without this the color/opacity jumps hard at every ring boundary. This blends across those
+  // boundaries so adjacent rings read as a continuous gradient instead of a stepped/banded look.
+  // Shared by both the main and minimap heatmap layers, each of which sits in the same grid-cell
+  // coordinate space as the contour geometry (see BAND_BLUR_RADIUS in viewer-heatmap.js) before
+  // its own transform scales it up to screen pixels.
+  const heatBlurFilter = document.createElementNS(NS, 'filter');
+  heatBlurFilter.setAttribute('id', 'heat-blur');
+  heatBlurFilter.setAttribute('x', '-30%');
+  heatBlurFilter.setAttribute('y', '-30%');
+  heatBlurFilter.setAttribute('width', '160%');
+  heatBlurFilter.setAttribute('height', '160%');
+  const heatBlurGaussian = document.createElementNS(NS, 'feGaussianBlur');
+  heatBlurGaussian.setAttribute('in', 'SourceGraphic');
+  heatBlurGaussian.setAttribute('stdDeviation', String(BAND_BLUR_RADIUS));
+  heatBlurFilter.appendChild(heatBlurGaussian);
+  defs.appendChild(heatBlurFilter);
 
   const enemyArrow = document.createElementNS(NS, 'marker');
   enemyArrow.setAttribute('id', 'enemy-arrow');
@@ -155,6 +175,7 @@ export async function createMapViewer({
 
   const miniHeatmapLayer = document.createElementNS(NS, "g");
   miniHeatmapLayer.setAttribute("class", "mini-heatmap-layer");
+  miniHeatmapLayer.setAttribute("filter", "url(#heat-blur)");
   miniHeatmapLayer.style.pointerEvents = "none";
   miniSvg.appendChild(miniHeatmapLayer);
 
