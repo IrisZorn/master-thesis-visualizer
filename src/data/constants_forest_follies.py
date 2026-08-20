@@ -1,3 +1,17 @@
+# Everything level-specific lives in this module: the type numbering the detector assigns, which
+# of those numbers are players, and which behaviour category each enemy falls into. The rest of
+# the pipeline (coords_transform.py, run_loader.py, agg_loader.py, build_enemy_full_paths.py) is
+# level-agnostic and only ever looks a type up by its role here -- so a new level is a copy of
+# this file with its own numbers and sets.
+
+# names this level's cached enemy data: resources/enemy_full_paths/<LEVEL>.pkl
+LEVEL = 'forest_follies'
+# pixel width of resources/forest_follies_stitched.png, the background this level's positions are
+# recorded against -- only used to tell a path that ends because the player reached the right
+# edge of the level (a finish) apart from one that ends for any other reason (a death/recording
+# cutoff). Needs updating if that image is ever re-stitched at a different size.
+MAP_WIDTH = 29114
+
 #constants
 acorn = '0'
 acorn_machine = '1'
@@ -26,8 +40,34 @@ FIXED_VERTICAL_ENEMIES = {
     spiky_bulb,
     toothy,
 }
+
 STATIONARY_ENEMIES = {
     shroom,
     tulip,
     acorn_machine,
 }
+
+MOVING_ENEMIES = {
+    daisy,
+    blueberry,
+    acorn
+}
+
+MOVING_MINIMIZING_ENEMIES = {
+    blueberry
+}
+
+# every player character this level has, in priority order. PLAYERS[0] is the primary one: the
+# player a single-player recording's detections all get merged into (see
+# run_loader.merge_into_primary_player), and the one whose position stands in for the camera when
+# reconstructing enemy tracks. Each player produces three detection streams -- their normal
+# sprite, their death/ghost sprite, and their taking-a-hit sprite.
+PLAYERS = (
+    {"main": cuphead, "ghost": cuphead_ghost, "hit": cuphead_hit},
+    {"main": mugman, "ghost": mugman_ghost, "hit": mugman_hit},
+)
+PLAYER_KEYS = {type_id for player in PLAYERS for type_id in player.values()}
+# every enemy type whose paths get reconstructed per run in coords_transform.transform_run.
+# Types absent from all the sets above (bullets, effects, start markers) are passed through
+# untouched, so a type only needs listing here if it has a behaviour worth tracking.
+ENEMY_KEYS = FIXED_VERTICAL_ENEMIES | STATIONARY_ENEMIES | MOVING_ENEMIES

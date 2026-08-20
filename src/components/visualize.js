@@ -163,8 +163,8 @@ export async function createMapViewer({
   const enemyPathsByType = Object.fromEntries(
     levelConfig.trackedEnemyTypes.map((type) => [type, data[0][type] || []])
   );
-  const aggCup = aggr_players?.["3"] || [];
-  const aggMug = aggr_players?.["8"] || [];
+  const aggCup = aggr_players?.[levelConfig.playerTypes.cup] || [];
+  const aggMug = aggr_players?.[levelConfig.playerTypes.mug] || [];
   const cupDeathRaw = data[0][levelConfig.playerTypes.cupDeath] || [];
   const mugDeathRaw = data[0][levelConfig.playerTypes.mugDeath] || [];
   const deathSprites = {
@@ -209,7 +209,16 @@ export async function createMapViewer({
 
   /* ---------------- TIME ---------------- */
 
-  let currentTime = 0;
+  // start the timeline at the earlier of the two players' first tracked position, not 0 --
+  // there's no data before that (find_stable_start already crops pre-movement noise on the
+  // data side), so starting the slider at 0 would just leave the player frozen at their first
+  // point for a dead stretch before anything happens.
+  const cupMinTime = cup.length ? cup[0][2] : Infinity;
+  const mugMinTime = mug.length ? mug[0][2] : Infinity;
+  const minTime = Math.min(cupMinTime, mugMinTime);
+  const startTime = Number.isFinite(minTime) ? minTime : 0;
+
+  let currentTime = startTime;
 
   const cupMaxTime = cup.length ? cup[cup.length - 1][2] : 0;
   const mugMaxTime = mug.length ? mug[mug.length - 1][2] : 0;
@@ -219,10 +228,10 @@ export async function createMapViewer({
 
   const slider = document.createElement("input");
   slider.type = "range";
-  slider.min = 0;
+  slider.min = startTime;
   slider.max = maxTime;
   slider.step = 0.1;
-  slider.value = 0;
+  slider.value = startTime;
   slider.style.width = "100%";
 
   const sliderWrapper = document.createElement('div');
@@ -263,16 +272,20 @@ export async function createMapViewer({
     centeredGlyphEnemyTypes,
     neverFadeEnemyTypes: levelConfig.neverFadeEnemyTypes,
     holdLastPositionEnemyTypes: levelConfig.holdLastPositionEnemyTypes,
+    minimizingEnemyTypes: levelConfig.minimizingEnemyTypes,
+    minimizingChainDistance: levelConfig.minimizingChainDistance,
     enemyInstanceXThreshold: ENEMY_INSTANCE_X_THRESHOLD,
     stationaryInstanceThreshold: STATIONARY_INSTANCE_THRESHOLD,
     showEnemy: () => showEnemyToggle.value,
   });
 
-  // compute segment opacity based on distance from currentTime
+  // fade a segment out the further currentTime has moved past it -- never fade one in ahead of
+  // time, so nothing previews before the scrub position actually reaches it.
   const FADE_DISTANCE = WINDOW_DELTA;
   function segmentOpacity(t1, t2) {
     const avg = (t1 + t2) / 2;
-    const dist = Math.abs(avg - currentTime);
+    const dist = currentTime - avg;
+    if (dist < 0) return 0;
     return clamp(1 - dist / FADE_DISTANCE, 0, 1);
   }
 
@@ -366,10 +379,10 @@ export async function createMapViewer({
     // set main viewBox to implement camera
     mainSvg.setAttribute('viewBox', `${cameraX} ${cameraY} ${viewportW} ${viewportH}`);
 
-    // prepare segment data for cup and mug (only within WINDOW_DELTA range)
+    // prepare segment data for cup and mug (only within WINDOW_DELTA range behind currentTime,
+    // never ahead of it)
     function makeSegments(points, color, strokeWidth=6, prefix='seg', who='cup') {
       const start = currentTime - WINDOW_DELTA;
-      const end = currentTime + WINDOW_DELTA;
       const segs = [];
       let fallbackSegment = null;
       for (let i = 1; i < points.length; i++) {
@@ -383,7 +396,7 @@ export async function createMapViewer({
         const segment = { id: `${prefix}-${i-1}`, x1: a[0], y1: a[1], x2: b[0], y2: b[1], points: [[a[0], a[1]], [b[0], b[1]]], color, strokeWidth, opacity: segmentOpacity(t1, t2), who, t: tmid };
         if (!fallbackSegment) fallbackSegment = segment;
         if (Math.max(t1, t2) < start) continue;
-        if (Math.min(t1, t2) > end) continue;
+        if (Math.min(t1, t2) > currentTime) continue;
         segs.push(segment);
       }
       if (!segs.length && fallbackSegment) {
@@ -691,14 +704,18 @@ export async function createMapViewer({
     )
       .each(function() { this.parentNode?.appendChild(this); });
 
-    // deaths + hits: fade with timestamp like segments
-    function eventOpacity(t) { return clamp(1 - Math.abs(t - currentTime) / FADE_DISTANCE, 0, 1); }
+    // deaths + hits: fade with timestamp like segments, only once currentTime has reached them
+    function eventOpacity(t) {
+      const dist = currentTime - t;
+      if (dist < 0) return 0;
+      return clamp(1 - dist / FADE_DISTANCE, 0, 1);
+    }
 
     // deaths
     if (showDeathToggle.value) {
       function deathData(points, color, label) {
         return points
-          .filter(p => p && p[0] != null && p[2] <= currentTime + WINDOW_DELTA)
+          .filter(p => p && p[0] != null && p[2] <= currentTime)
           .map((p, i) => ({
             id: `death-${label}-${i}-${p[2]}`,
             x: p[0],
@@ -770,7 +787,7 @@ export async function createMapViewer({
     if (showHitToggle.value) {
       function hitData(points, color, label) {
         return points
-          .filter(p => p && p[0] != null && p[2] <= currentTime + WINDOW_DELTA)
+          .filter(p => p && p[0] != null && p[2] <= currentTime)
           .map((p, i) => ({
             id: `hit-${label}-${i}-${p[2]}`,
             x: p[0],
@@ -836,6 +853,9 @@ export async function createMapViewer({
     } else {
       mainSel.selectAll('.hit').remove();
     }
+
+    // keep ghost/death glyphs above hit glyphs regardless of render order above
+    mainSel.selectAll('.death').each(function() { this.parentNode?.appendChild(this); });
 
     // minimap: draw small scaled paths and viewport rect
     const miniSel = d3.select(miniLayers);

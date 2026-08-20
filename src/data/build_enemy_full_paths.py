@@ -1,8 +1,8 @@
 import pickle
 from pathlib import Path
 
-import constants_forest_follies as const
-from coords_transform import build_enemy_paths
+import constants_forest_follies
+from coords_transform import build_enemy_paths, enemy_full_paths_path
 from helper import distance, cluster_points_by_distance
 
 # same threshold visualize.js's aggregateVerticalEnemyTracks already uses to
@@ -23,8 +23,11 @@ STATIONARY_DISTANCE_THRESHOLD = 200
 # around a dozen, so this sits comfortably in the gap between them
 OUTLIER_CLUSTER_SIZE = 50
 
-SOURCE_DIR = Path(__file__).parent / "resources/play_data"
-OUTPUT_PATH = Path(__file__).parent / "resources/enemy_full_paths.pkl"
+# every level this script rebuilds a cache for, paired with the play data it's built from. Add a
+# level's constants module here once its recordings exist; one run refreshes all of them.
+LEVELS = [
+    (constants_forest_follies, Path(__file__).parent / "resources/play_data"),
+]
 
 
 def find_nearest_instance(instances, distance_to, threshold):
@@ -75,16 +78,16 @@ def merge_stationary_points_into_instances(instances, points, distance_threshold
         match["num_points"] = total
 
 
-def update_from_pkl(known_paths, pkl_path):
+def update_from_pkl(known_paths, pkl_path, level):
     with open(pkl_path, "rb") as f:
         point_dict = pickle.load(f)
 
     for run in point_dict:
-        for enemy_type in const.FIXED_VERTICAL_ENEMIES:
+        for enemy_type in level.FIXED_VERTICAL_ENEMIES:
             for points in build_enemy_paths(run.get(enemy_type) or []):
                 merge_track_into_instances(known_paths[enemy_type], points)
 
-        for enemy_type in const.STATIONARY_ENEMIES:
+        for enemy_type in level.STATIONARY_ENEMIES:
             merge_stationary_points_into_instances(known_paths[enemy_type], run.get(enemy_type) or [])
 
 
@@ -98,19 +101,29 @@ def print_instances(known_paths):
                 print(f"  x={instance['x']:.1f} y={instance['y']:.1f} n={instance['num_points']}")
 
 
-if __name__ == "__main__":
-    known_paths = {enemy_type: [] for enemy_type in const.FIXED_VERTICAL_ENEMIES | const.STATIONARY_ENEMIES}
+def build_known_paths(level, source_dir):
+    known_paths = {enemy_type: [] for enemy_type in level.FIXED_VERTICAL_ENEMIES | level.STATIONARY_ENEMIES}
 
-    for pkl_path in sorted(SOURCE_DIR.glob("*.pkl")):
-        update_from_pkl(known_paths, pkl_path)
+    for pkl_path in sorted(source_dir.glob("*.pkl")):
+        update_from_pkl(known_paths, pkl_path, level)
 
-    for enemy_type in const.STATIONARY_ENEMIES:
+    for enemy_type in level.STATIONARY_ENEMIES:
         known_paths[enemy_type] = [
             instance for instance in known_paths[enemy_type]
             if instance["num_points"] >= OUTLIER_CLUSTER_SIZE
         ]
 
-    with open(OUTPUT_PATH, "wb") as f:
-        pickle.dump({"enemies": known_paths}, f)
+    return known_paths
 
-    print_instances(known_paths)
+
+if __name__ == "__main__":
+    for level, source_dir in LEVELS:
+        known_paths = build_known_paths(level, source_dir)
+
+        output_path = enemy_full_paths_path(level)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, "wb") as f:
+            pickle.dump({"enemies": known_paths}, f)
+
+        print(f"{level.LEVEL} -> {output_path}")
+        print_instances(known_paths)

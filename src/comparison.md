@@ -45,10 +45,21 @@ const selectedPlaythrough = Generators.input(playthroughSelect);
 ```
 
 ```js
-// Create and display the viewer for the selected playthrough. Legend and input UI
-// are owned by the viewer itself. Reruns whenever selectedPlaythrough changes.
+// Runs within the selected playthrough. Recreated (and reset to "Run 1") whenever
+// selectedPlaythrough changes, since different playthroughs have different run counts.
+const runOptions = playthroughsByFile[selectedPlaythrough].map((_, i) => `Run ${i + 1}`);
+const runSelect = Inputs.select(runOptions, {label: "Select Run", value: runOptions[0]});
+display(runSelect);
+
+const selectedRun = Generators.input(runSelect);
+```
+
+```js
+// Create and display the viewer for the selected playthrough/run. Legend and input UI
+// are owned by the viewer itself. Reruns whenever selectedPlaythrough or selectedRun changes.
+const runIndex = Number(selectedRun.replace('Run ', '')) - 1;
 const currentViewer = await createMapViewer({
-	curr_playthrough: playthroughsByFile[selectedPlaythrough],
+	curr_playthrough: [playthroughsByFile[selectedPlaythrough][runIndex]],
 	mapUrl,
 	spriteUrls,
 	enemySizesText,

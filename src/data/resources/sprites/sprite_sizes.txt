@@ -10,11 +10,9 @@ tulip=120,170
 daisy=140,190
 blueberry=100,120
 
-player=80,90
-
 #TODO: look at clustering
 #TODO: shooting arrows
-#TODO: check playthroughs with multiple reruns
+#TODO: check playthroughs with multiple reruns -> run overlay? Problem time difference
 
 #TODO: look at enemy clustering
 

@@ -3,10 +3,14 @@ export function clamp(value, min, max) {
 }
 
 export function findCurrentIndex(path, time) {
-  for (let index = 0; index < path.length; index += 1) {
-    if (path[index][2] >= time) return index;
+  // holds at the last point whose time has already passed, instead of snapping forward to the
+  // next upcoming one, so the glyph never previews a position it hasn't reached yet.
+  let index = 0;
+  for (let i = 0; i < path.length; i += 1) {
+    if (path[i][2] > time) break;
+    index = i;
   }
-  return path.length - 1;
+  return index;
 }
 
 export function validTimedPoints(points) {

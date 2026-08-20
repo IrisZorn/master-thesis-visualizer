@@ -3,18 +3,29 @@ from bisect import bisect_left
 from math import inf
 from pathlib import Path
 
-import constants_forest_follies as const
 from helper import filter_points, extract_singular_points, remove_reconnecting_jumps, remove_single_point_spikes
 
+# This module knows nothing about any particular level. Every function that needs one takes a
+# `level` argument -- a constants_<level> module (see constants_forest_follies.py) -- and looks
+# type numbers up through its role sets rather than naming them.
 
-ENEMY_JUMP_THRESHOLD = 400
+
+# base distance a track's last point and a new detection may be apart, at zero gap, for the
+# detection to continue that track (see ENEMY_REACQUIRE_SPEED below for how this grows with gap
+# length). Originally 400 with a much steeper per-gap growth (5px/unit): together those let an
+# 80-unit gap alone justify an 800px reconnect. Checked against real playthrough data: jumps using
+# most of that old allowance were consistently two unrelated sightings stitched together (Daisy
+# jumping ~750px, mostly vertical -- ~43% of the level's full screen height -- in one reconnect).
+# But a flat cap (no gap growth at all) doesn't work either -- it can't distinguish that bad case
+# from a genuine 408px Blueberry reconnect at a similar gap (73 units), since some legitimate
+# enemies cover more ground than others while briefly undetected. 250 (~1.8x an enemy's own glyph
+# size), paired with the smaller growth rate below, was the smallest combination found that still
+# accepts that Blueberry reconnect while rejecting every jump identified as spurious.
+ENEMY_JUMP_THRESHOLD = 250
 # extra distance allowed, per unit of time since a track was last detected, on top of
-# jump_threshold when deciding whether a gapped detection continues that track. A flat threshold
-# treats a candidate 1 time unit later and one 28 time units later identically, even though more
-# time passing means more plausible real movement; this lets longer (but still capped, see
-# max_reacquire_gap above) gaps cover proportionally more distance without loosening matching
-# for short, consecutive-ish gaps where a jump this large would still be implausible.
-ENEMY_REACQUIRE_SPEED = 5
+# jump_threshold when deciding whether a gapped detection continues that track. Down from an
+# original 5px/unit -- see ENEMY_JUMP_THRESHOLD above for why that combination was too generous.
+ENEMY_REACQUIRE_SPEED = 3
 # a track that hasn't been detected in this many time units is no longer eligible to be
 # extended by a later detection, regardless of how close it lands. Without this, a detection
 # that happens to land near an old track's last point after a long silent gap -- e.g. the enemy
@@ -39,24 +50,21 @@ MAX_ENEMY_REACQUIRE_GAP_NEAR_EDGE = 150
 # build_enemy_full_paths.py's MIN_TRACK_POINTS=20 because these enemies roam
 # freely and can legitimately pass through view in a handful of frames.
 MIN_ENEMY_TRACK_POINTS = 5
-PLAYER_KEYS = {
-    const.cuphead,
-    const.cuphead_ghost,
-    const.cuphead_hit,
-    const.mugman,
-    const.mugman_ghost,
-    const.mugman_hit,
-}
-ENEMY_KEYS = {
-    const.acorn,
-    const.acorn_machine,
-    const.spiky_bulb,
-    const.toothy,
-    const.daisy,
-    const.blueberry,
-    const.shroom,
-    const.tulip,
-}
+# max time gap between a path's last known position and an existing ghost detection for that
+# ghost to count as already covering the end of the run -- reuses extract_singular_points'
+# default time_thresh, the same "same event" window already used to cluster ghost/hit detections.
+END_OF_RUN_GHOST_WINDOW = 200
+# min cleaned path length for the end-of-run marker below to fire. A real player's path spans
+# hundreds/thousands of points; a handful of false-positive detections on the *other* player in
+# solo footage (e.g. stray "mugman" noise in a Cuphead-only run) cleans down to a tiny path
+# instead, which would otherwise get a bogus synthetic ghost stapled onto wherever that noise
+# happened to land.
+MIN_PATH_POINTS_FOR_END_MARKER = 20
+# how close a path's last known x has to be to the level's MAP_WIDTH to count as having reached
+# the end of the level. The camera stops scrolling once it's clamped to the map's right edge (see
+# visualize.js's cameraX clamp), so a player who actually finished can still be recorded up to
+# about this far short of the true edge while still reading as "at the end" on screen.
+MAP_END_MARGIN = VIEWPORT_WIDTH * 2 / 3
 # same threshold build_enemy_full_paths.py's X_MATCH_THRESHOLD uses to tell separate instances
 # of these two enemy types apart -- reused here to assign a raw detection to the known instance
 # it belongs to.
@@ -65,16 +73,21 @@ FIXED_VERTICAL_X_MATCH_THRESHOLD = 170
 # detection may still fall and be treated as that enemy. The range is derived from many
 # playthroughs, so a real sighting barely exceeds it; this only absorbs minor per-run variation.
 FIXED_VERTICAL_Y_MARGIN = 120
-ENEMY_FULL_PATHS_PATH = Path(__file__).parent / "resources/enemy_full_paths.pkl"
-_known_enemy_instances = None
+# one cache file per level, since its keys are bare type numbers and those mean different enemies
+# in different levels. Written by build_enemy_full_paths.py.
+ENEMY_FULL_PATHS_DIR = Path(__file__).parent / "resources/enemy_full_paths"
+_known_enemy_instances = {}
 
 
-def load_known_enemy_instances():
-    global _known_enemy_instances
-    if _known_enemy_instances is None:
-        with open(ENEMY_FULL_PATHS_PATH, "rb") as f:
-            _known_enemy_instances = pickle.load(f).get("enemies", {})
-    return _known_enemy_instances
+def enemy_full_paths_path(level):
+    return ENEMY_FULL_PATHS_DIR / f"{level.LEVEL}.pkl"
+
+
+def load_known_enemy_instances(level):
+    if level.LEVEL not in _known_enemy_instances:
+        with open(enemy_full_paths_path(level), "rb") as f:
+            _known_enemy_instances[level.LEVEL] = pickle.load(f).get("enemies", {})
+    return _known_enemy_instances[level.LEVEL]
 
 
 def point_distance(point_a, point_b):
@@ -85,15 +98,15 @@ def point_distance(point_a, point_b):
     return (dx * dx + dy * dy) ** 0.5
 
 
-def find_player_x(cup_times, cup_path, t):
-    if not cup_path:
+def find_player_x(player_times, player_path, t):
+    if not player_path:
         return None
-    idx = bisect_left(cup_times, t)
+    idx = bisect_left(player_times, t)
     candidates = []
-    if idx < len(cup_path):
-        candidates.append(cup_path[idx])
+    if idx < len(player_path):
+        candidates.append(player_path[idx])
     if idx > 0:
-        candidates.append(cup_path[idx - 1])
+        candidates.append(player_path[idx - 1])
     nearest = min(candidates, key=lambda point: abs(point[2] - t))
     return nearest[0]
 
@@ -117,7 +130,7 @@ def clean_path_points(points, ghost_points=(), hit_points=()):
 
 def build_enemy_paths(
     values,
-    cup_path=(),
+    player_path=(),
     jump_threshold=ENEMY_JUMP_THRESHOLD,
     reacquire_speed=ENEMY_REACQUIRE_SPEED,
     max_reacquire_gap=MAX_ENEMY_REACQUIRE_GAP,
@@ -127,8 +140,8 @@ def build_enemy_paths(
     if not values:
         return []
 
-    cup_path = list(cup_path)
-    cup_times = [point[2] for point in cup_path]
+    player_path = list(player_path)
+    player_times = [point[2] for point in player_path]
 
     tracks = []
 
@@ -143,7 +156,7 @@ def build_enemy_paths(
             if gap <= max_reacquire_gap:
                 available_tracks.append(track)
                 continue
-            player_x = find_player_x(cup_times, cup_path, track[-1][2])
+            player_x = find_player_x(player_times, player_path, track[-1][2])
             if gap <= max_reacquire_gap_near_edge and is_near_viewport_edge(track[-1][0], player_x):
                 available_tracks.append(track)
 
@@ -237,7 +250,12 @@ def build_fixed_vertical_paths(
     return tracks
 
 
-def clean_player_path(run, main_type, ghost_type, hit_type):
+def clean_player_path(run, player, map_width, allow_end_marker=True, has_next_run=True):
+    # player is one entry of a level's PLAYERS tuple: {"main", "ghost", "hit"} -> type numbers.
+    # Returns the same shape, so callers can keep working stream-by-stream without knowing which
+    # character it is.
+    main_type, ghost_type, hit_type = player["main"], player["ghost"], player["hit"]
+
     # ghost_type is passed to filter_points raw (unsorted, un-deduped): it's only used there
     # to check whether *any* ghost detection falls inside a time gap, so dedup doesn't matter.
     raw_ghosts = run[ghost_type]
@@ -247,51 +265,77 @@ def clean_player_path(run, main_type, ghost_type, hit_type):
     path = sorted(run.get(main_type) or [], key=lambda point: point[2])
     path = clean_path_points(path, raw_ghosts, hits)
 
+    # a run that just stops (recording cuts off) rather than ending in a captured death looks
+    # identical to a live player on the timeline. If the path's last known position isn't
+    # already near a real ghost detection, synthesize one there so the end of the run reads the
+    # same as an actual death. Skipped for a player who isn't really being tracked at all
+    # (allow_end_marker=False, e.g. Mugman in a solo run about to be merged into Cuphead) --
+    # their "path" is noise, so it has no real end to mark.
+    last_point = None
+    if allow_end_marker and len(path) >= MIN_PATH_POINTS_FOR_END_MARKER:
+        last_point = next((point for point in reversed(path) if point[0] is not None), None)
+    if last_point is not None and not any(abs(ghost[2] - last_point[2]) <= END_OF_RUN_GHOST_WINDOW for ghost in ghosts):
+        # a later run in the same playthrough means this one ended in a death (the player
+        # retried); with no later run, reaching the far edge of the map means they finished the
+        # level instead, which isn't a death and shouldn't get a marker.
+        reached_map_end = last_point[0] is not None and last_point[0] >= map_width - MAP_END_MARGIN
+        if has_next_run or not reached_map_end:
+            ghosts = list(ghosts) + [last_point]
+
     # fold the ghost/hit points back into the trail so revivals and hits show up as points
     # along the path, then re-sort since they're appended out of chronological order
     path = [(x, y, t) for x, y, t in path] + list(ghosts) + list(hits)
     path.sort(key=lambda point: point[2])
 
-    return path, ghosts, hits
+    return {"main": path, "ghost": ghosts, "hit": hits}
 
 
-def stable_start_time(cup_path, mug_path):
-    # earliest of the two players' own validated start (see clean_player_path/find_stable_start):
-    # once either player's real position is being tracked, the recording is in real gameplay, so
+def stable_start_time(player_paths):
+    # earliest of the players' own validated starts (see clean_player_path/find_stable_start):
+    # once any player's real position is being tracked, the recording is in real gameplay, so
     # detections of anything -- not just players -- before that point aren't trustworthy either.
-    starts = [path[0][2] for path in (cup_path, mug_path) if path]
+    starts = [path[0][2] for path in player_paths if path]
     return min(starts) if starts else 0
 
 
-def transform_run(run):
-    if not run.get(const.cuphead) or not run.get(const.mugman):
+def transform_run(run, level, is_coop=True, has_next_run=True):
+    if not all(run.get(player["main"]) for player in level.PLAYERS):
         return None
 
-    cup_path, cup_ghosts, cup_hits = clean_player_path(run, const.cuphead, const.cuphead_ghost, const.cuphead_hit)
-    mug_path, mug_ghosts, mug_hits = clean_player_path(run, const.mugman, const.mugman_ghost, const.mugman_hit)
-    start_time = stable_start_time(cup_path, mug_path)
+    # only the primary player (PLAYERS[0]) is always really being tracked. In single-player
+    # footage the others' detections are noise misread off the primary, so they get no
+    # end-of-run marker -- there's no real run of theirs to mark the end of.
+    cleaned_players = [
+        clean_player_path(
+            run, player, level.MAP_WIDTH,
+            allow_end_marker=is_coop or index == 0,
+            has_next_run=has_next_run,
+        )
+        for index, player in enumerate(level.PLAYERS)
+    ]
+    player_paths = [cleaned["main"] for cleaned in cleaned_players]
+    start_time = stable_start_time(player_paths)
 
-    # cuphead/mugman and their ghost/hit streams are cleaned above; enemy tracks are rebuilt
+    # players and their ghost/hit streams are cleaned above; enemy tracks are rebuilt
     # from raw run data below, so neither needs the generic sort-and-passthrough treatment here
     my_dict = {
         char: [(x, y, t) for x, y, t in sorted(values, key=lambda point: point[2]) if t >= start_time]
         for char, values in run.items()
-        if char not in PLAYER_KEYS | ENEMY_KEYS
+        if char not in level.PLAYER_KEYS | level.ENEMY_KEYS
     }
 
-    my_dict[const.cuphead] = cup_path
-    my_dict[const.mugman] = mug_path
-    my_dict[const.cuphead_ghost] = [(x, y, t) for x, y, t in cup_ghosts]
-    my_dict[const.mugman_ghost] = [(x, y, t) for x, y, t in mug_ghosts]
-    my_dict[const.cuphead_hit] = [(x, y, t) for x, y, t in cup_hits]
-    my_dict[const.mugman_hit] = [(x, y, t) for x, y, t in mug_hits]
+    for stream in ("main", "ghost", "hit"):
+        for player, cleaned in zip(level.PLAYERS, cleaned_players):
+            my_dict[player[stream]] = [(x, y, t) for x, y, t in cleaned[stream]]
 
-    known_instances = load_known_enemy_instances()
-    for enemy_type in ENEMY_KEYS:
+    # sorted() because these sets iterate in an arbitrary (per-process) order otherwise, which
+    # would shuffle the output's key order from one run of the pipeline to the next
+    known_instances = load_known_enemy_instances(level)
+    for enemy_type in sorted(level.ENEMY_KEYS):
         enemy_values = [point for point in (run.get(enemy_type) or []) if point[2] >= start_time]
-        if enemy_type in const.FIXED_VERTICAL_ENEMIES:
+        if enemy_type in level.FIXED_VERTICAL_ENEMIES:
             my_dict[enemy_type] = build_fixed_vertical_paths(enemy_values, known_instances.get(enemy_type, []))
         else:
-            my_dict[enemy_type] = build_enemy_paths(enemy_values, cup_path=cup_path)
+            my_dict[enemy_type] = build_enemy_paths(enemy_values, player_path=player_paths[0])
 
     return my_dict

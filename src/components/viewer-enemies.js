@@ -19,6 +19,8 @@ export function createEnemyVisualBuilder({
   centeredGlyphEnemyTypes,
   neverFadeEnemyTypes = new Set(),
   holdLastPositionEnemyTypes = new Set(),
+  minimizingEnemyTypes = new Set(),
+  minimizingChainDistance = 700,
   enemyInstanceXThreshold,
   stationaryInstanceThreshold,
   showEnemy,
@@ -51,10 +53,6 @@ export function createEnemyVisualBuilder({
     return MIN_GREY_ALPHA + fade * (1 - MIN_GREY_ALPHA);
   }
 
-  // fixed-path enemies are never drawn from a future detection: filterRecentPoints's
-  // +windowDelta window would show where the enemy will be up to windowDelta later, which at
-  // their patrol speed is hundreds of pixels off.
-  //
   // Across a detection gap the last known position is held rather than dropping to the resting
   // position and back -- during a short gap the enemy has barely moved (median ~66px for gaps of
   // 4-10 time units), so holding is far closer to the truth than a round trip to the bottom it
@@ -78,27 +76,24 @@ export function createEnemyVisualBuilder({
   }
 
   function filterRecentPoints(points, minClusterSize = 2) {
-    const validPoints = validTimedPoints(points).filter((point) => point[2] <= currentTimeProvider() + windowDelta);
+    // never includes a point currentTime hasn't reached yet -- see segmentOpacity/buildFadedTrailSegments below for the matching backward-only fade.
+    const validPoints = validTimedPoints(points).filter((point) => point[2] <= currentTimeProvider());
     if (validPoints.length < minClusterSize) return [];
     return validPoints;
-  }
-
-  function hasRecentEnemyEvidence(tracks, minClusterSize = 2) {
-    return tracks.some((track) => filterRecentPoints(track, minClusterSize).length >= minClusterSize);
   }
 
   // Fade each segment by distance from currentTime, same as the player's trail (makeSegments
   // in visualize.js), instead of drawing the whole track at constant opacity: these enemies
   // (e.g. daisy/blueberry) roam freely and their full history would otherwise clutter the map.
   function segmentOpacity(t1, t2) {
-    const dist = Math.abs((t1 + t2) / 2 - currentTimeProvider());
+    const dist = currentTimeProvider() - (t1 + t2) / 2;
+    if (dist < 0) return 0;
     return clamp(1 - dist / windowDelta, 0, 1);
   }
 
   function buildFadedTrailSegments(points, idPrefix, color, width) {
     const time = currentTimeProvider();
     const start = time - windowDelta;
-    const end = time + windowDelta;
     const segs = [];
     let fallbackSegment = null;
 
@@ -113,7 +108,7 @@ export function createEnemyVisualBuilder({
       const segment = { id: `${idPrefix}-${i - 1}`, points: [[a[0], a[1]], [b[0], b[1]]], stroke: color, width, opacity: segmentOpacity(t1, t2) };
       if (!fallbackSegment) fallbackSegment = segment;
       if (Math.max(t1, t2) < start) continue;
-      if (Math.min(t1, t2) > end) continue;
+      if (Math.min(t1, t2) > time) continue;
       segs.push(segment);
     }
 
@@ -157,6 +152,57 @@ export function createEnemyVisualBuilder({
     }
 
     return matches;
+  }
+
+  // Minimizing enemies (Forest Follies' Blueberry): unlike other roaming enemies (daisy/acorn),
+  // these can "minimize" -- become undetected mid-encounter and later pop back up continuing the
+  // same encounter, rather than actually leaving. So consecutive tracks close enough in space are
+  // chained into one visual identity instead of showing as separate numbered instances. Which
+  // types behave this way is a per-level fact (levelConfig.minimizingEnemyTypes, mirroring
+  // constants_forest_follies.py's MOVING_MINIMIZING_ENEMIES).
+  function buildMinimizingChains(enemyType) {
+    const segments = (enemyPathsByType[enemyType] || [])
+      .map((points) => validTimedPoints(points))
+      .filter((points) => points.length > 1)
+      .sort((a, b) => a[0][2] - b[0][2]);
+
+    const chains = [];
+    for (const points of segments) {
+      const current = chains[chains.length - 1];
+      const prevSegment = current ? current.segments[current.segments.length - 1] : null;
+      const prevEnd = prevSegment ? prevSegment[prevSegment.length - 1] : null;
+      if (prevEnd && Math.hypot(prevEnd[0] - points[0][0], prevEnd[1] - points[0][1]) <= minimizingChainDistance) {
+        current.segments.push(points);
+        continue;
+      }
+      // numbering restarts per type, so each type's chains read as instance 0, 1, 2 ...
+      chains.push({ id: `minimizing-chain-${enemyType}-${chains.length}`, index: chains.length, type: enemyType, segments: [points] });
+    }
+    return chains;
+  }
+
+  const minimizingChains = [...minimizingEnemyTypes].flatMap((enemyType) => buildMinimizingChains(enemyType));
+
+  // where a chain currently stands: mid-segment (actively detected, moving) or held at the end
+  // of whichever segment most recently finished (minimized -- greyed, static) until the next
+  // segment's own span begins.
+  function chainStateAtTime(chain, time) {
+    let heldSegment = null;
+    for (const segment of chain.segments) {
+      const segStart = segment[0][2];
+      const segEnd = segment[segment.length - 1][2];
+      if (segStart > time) break;
+      if (segEnd >= time) {
+        const pointsSoFar = segment.filter((point) => point[2] <= time);
+        if (pointsSoFar.length >= 2) {
+          return { points: pointsSoFar, lastDetection: segEnd, active: true };
+        }
+        break;
+      }
+      heldSegment = segment;
+    }
+    if (!heldSegment) return null;
+    return { points: heldSegment, lastDetection: heldSegment[heldSegment.length - 1][2], active: false };
   }
 
   function buildEnemyVisuals() {
@@ -223,7 +269,7 @@ export function createEnemyVisualBuilder({
     }
 
     for (const track of enemyPaths) {
-      if (stationaryEnemyTypes.has(track.type) || centeredGlyphEnemyTypes.has(track.type)) continue;
+      if (stationaryEnemyTypes.has(track.type) || centeredGlyphEnemyTypes.has(track.type) || minimizingEnemyTypes.has(track.type)) continue;
       const points = filterRecentPoints(track.points, 2);
 
       if (points.length > 1) {
@@ -238,6 +284,17 @@ export function createEnemyVisualBuilder({
         const glyphPoint = getLastTimedPoint(points);
         if (glyphPoint) visuals.glyphs.push({ id: `enemy-glyph-live-${track.id}`, type: track.type, x: glyphPoint[0], y: glyphPoint[1], color: trackColor, label: track.index, opacity: trackIsActive ? 1 : visibility });
       }
+    }
+
+    for (const chain of minimizingChains) {
+      const state = chainStateAtTime(chain, currentTimeProvider());
+      if (!state) continue;
+
+      const visibility = instanceVisibility(state.lastDetection);
+      const chainColor = state.active ? "rgba(64, 224, 208, 0.9)" : `rgba(148, 163, 184, ${(0.9 * visibility).toFixed(2)})`;
+      visuals.paths.push(...buildFadedTrailSegments(state.points, `enemy-free-${chain.id}`, chainColor, 8));
+      const glyphPoint = getLastTimedPoint(state.points);
+      if (glyphPoint) visuals.glyphs.push({ id: `enemy-glyph-live-${chain.id}`, type: chain.type, x: glyphPoint[0], y: glyphPoint[1], color: chainColor, label: chain.index, opacity: state.active ? 1 : visibility });
     }
 
     return visuals;

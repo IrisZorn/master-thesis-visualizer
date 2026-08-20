@@ -29,6 +29,17 @@ const DEFAULT_LEVEL_CONFIG = {
   },
   stationaryEnemyTypes: ["11", "17", "1"],
   centeredGlyphEnemyTypes: ["14", "16"],
+  // enemies that can "minimize" (go undetected mid-encounter) and later resume the same
+  // encounter, rather than actually leaving -- their consecutive tracks get chained into one
+  // visual identity instead of showing as separate numbered instances (see
+  // buildMinimizingChains in viewer-enemies.js). Matches constants_forest_follies.py's
+  // MOVING_MINIMIZING_ENEMIES.
+  minimizingEnemyTypes: ["2"],
+  // how close two consecutive tracks of a minimizing enemy have to be to count as the same
+  // encounter resuming. Gap length deliberately doesn't matter (a minimize can last arbitrarily
+  // long); only proximity does. 700 comes from a survey of likely-same-blueberry track pairs in
+  // real playthrough data.
+  minimizingChainDistance: 700,
   // toothy can never actually leave the level (it just patrols a fixed vertical path), so a
   // detection gap means it's temporarily undetected, not gone -- unlike other enemies it should
   // stay fully colored instead of greying/fading out while "inactive".
@@ -72,6 +83,7 @@ export function createLevelConfig(overrides = {}) {
     },
     stationaryEnemyTypes: new Set(overrides.stationaryEnemyTypes || DEFAULT_LEVEL_CONFIG.stationaryEnemyTypes),
     centeredGlyphEnemyTypes: new Set(overrides.centeredGlyphEnemyTypes || DEFAULT_LEVEL_CONFIG.centeredGlyphEnemyTypes),
+    minimizingEnemyTypes: new Set(overrides.minimizingEnemyTypes || DEFAULT_LEVEL_CONFIG.minimizingEnemyTypes),
     neverFadeEnemyTypes: new Set(overrides.neverFadeEnemyTypes || DEFAULT_LEVEL_CONFIG.neverFadeEnemyTypes),
     holdLastPositionEnemyTypes: new Set(overrides.holdLastPositionEnemyTypes || DEFAULT_LEVEL_CONFIG.holdLastPositionEnemyTypes),
     enemyLegendSpriteKey: overrides.enemyLegendSpriteKey ?? DEFAULT_LEVEL_CONFIG.enemyLegendSpriteKey,
