@@ -1,7 +1,8 @@
 import * as d3 from "d3";
 import { createLevelConfig, parseEnemySizes } from "./level-config.js";
-import { Toggle, createLegendRow, createSliderMarkers, makeLegendGlyph } from "./viewer-controls.js";
+import { Toggle, createLegendRow, createSliderMarkers, makeLegendGlyph, makeLegendGradientGlyph } from "./viewer-controls.js";
 import { createEnemyVisualBuilder, getEnemyGlyphSize, getEnemyGlyphSource } from "./viewer-enemies.js";
+import { HEATMAP_COLORS, createEnemyHeatmapBuilder } from "./viewer-heatmap.js";
 import { clamp, findCurrentIndex, flattenEnemyPaths, makePathD, validTimedPoints } from "./viewer-helpers.js";
 
 export async function createMapViewer({
@@ -17,6 +18,7 @@ export async function createMapViewer({
   showDeath: initialShowDeath = true,
   showHit: initialShowHit = true,
   showAggregate: initialShowAggregate = true,
+  showHeatmap: initialShowHeatmap = false,
 }) {
 
   const data = providedData ?? curr_playthrough;
@@ -63,6 +65,13 @@ export async function createMapViewer({
   mainImage.setAttribute("height", mapH);
   mainImage.setAttribute('preserveAspectRatio', 'xMidYMid meet');
   mainSvg.appendChild(mainImage);
+
+  // aggregated enemy density field: sits directly above the background image and below the halo
+  // and main layers, so switching it on never obscures the run being scrubbed
+  const heatmapLayer = document.createElementNS(NS, 'g');
+  heatmapLayer.setAttribute('class', 'heatmap-layer');
+  heatmapLayer.style.pointerEvents = 'none';
+  mainSvg.appendChild(heatmapLayer);
 
   // add SVG defs with halo filter for outline glow (returns only blur with alpha compression)
   const defs = document.createElementNS(NS, 'defs');
@@ -143,6 +152,11 @@ export async function createMapViewer({
   miniImage.setAttribute("height", miniH);
   miniImage.setAttribute('preserveAspectRatio', 'xMidYMid meet');
   miniSvg.appendChild(miniImage);
+
+  const miniHeatmapLayer = document.createElementNS(NS, "g");
+  miniHeatmapLayer.setAttribute("class", "mini-heatmap-layer");
+  miniHeatmapLayer.style.pointerEvents = "none";
+  miniSvg.appendChild(miniHeatmapLayer);
 
   const miniLayers = document.createElementNS(NS, "g");
   miniLayers.setAttribute("class", "mini-layers");
@@ -260,6 +274,12 @@ export async function createMapViewer({
   const showHitToggle = new Toggle(initialShowHit);
   const showEnemyToggle = new Toggle(true);
   const showAggregateToggle = new Toggle(initialShowAggregate);
+  const showHeatmapToggle = new Toggle(initialShowHeatmap);
+
+  // built from the aggregate across playthroughs (agg_loader.aggregate_enemy_density), not from
+  // the run currently being scrubbed -- missing if the data loader's cache predates that key, in
+  // which case the overlay simply stays empty
+  const getHeatmap = createEnemyHeatmapBuilder({ density: aggr_players?.enemy_density });
 
   const enemyPaths = flattenEnemyPaths(enemyPathsByType);
   const { buildEnemyVisuals, filterRecentPoints } = createEnemyVisualBuilder({
@@ -378,6 +398,37 @@ export async function createMapViewer({
 
     // set main viewBox to implement camera
     mainSvg.setAttribute('viewBox', `${cameraX} ${cameraY} ${viewportW} ${viewportH}`);
+
+    // enemy heatmap: aggregated over every playthrough, so it doesn't change with currentTime --
+    // the contours are built once on first activation and only bound/unbound from here on. The
+    // contour geometry is in grid cells, so each layer scales it into its own coordinate space.
+    const heatmap = showHeatmapToggle.value ? getHeatmap() : null;
+    const heatmapBands = heatmap?.bands ?? [];
+
+    function joinHeatmapBands(layer, className, transform) {
+      const sel = d3.select(layer).selectAll(`.${className}`).data(heatmapBands, d => d.id);
+      sel.join(
+        enter => enter.append('path').attr('class', className)
+          .attr('d', d => d.d)
+          .attr('fill', d => d.fill)
+          .attr('fill-opacity', d => d.opacity)
+          .attr('stroke', 'none'),
+        update => update
+          .attr('d', d => d.d)
+          .attr('fill', d => d.fill)
+          .attr('fill-opacity', d => d.opacity),
+        exit => exit.remove()
+      );
+      if (transform) layer.setAttribute('transform', transform);
+      else layer.removeAttribute('transform');
+    }
+
+    joinHeatmapBands(heatmapLayer, 'heat-band', heatmap ? `scale(${heatmap.cellSize})` : null);
+    joinHeatmapBands(
+      miniHeatmapLayer,
+      'mini-heat-band',
+      heatmap ? `scale(${heatmap.cellSize * scaleX}, ${heatmap.cellSize * scaleY})` : null
+    );
 
     // prepare segment data for cup and mug (only within WINDOW_DELTA range behind currentTime,
     // never ahead of it)
@@ -975,6 +1026,7 @@ export async function createMapViewer({
   const enemyLegendSpriteKey = levelConfig.enemyLegendSpriteKey
     ?? Object.values(levelConfig.enemyGlyphSources).find((spriteKey) => spriteUrls[spriteKey]);
   leftLegend.appendChild(createLegendRow({ label: 'Enemies', color: '#40e0d0', getter: () => showEnemyToggle.value, setter: v => { showEnemyToggle.value = v; }, glyphNode: makeLegendGlyph(enemyLegendSpriteKey ? spriteUrls[enemyLegendSpriteKey] : hitSprites.C, 'rgba(64, 224, 208, 0.18)', '#40e0d0'), onChange: rerenderFromControls }));
+  leftLegend.appendChild(createLegendRow({ label: 'Enemy heatmap', color: HEATMAP_COLORS[HEATMAP_COLORS.length - 1], getter: () => showHeatmapToggle.value, setter: v => { showHeatmapToggle.value = v; }, glyphNode: makeLegendGradientGlyph(HEATMAP_COLORS), onChange: rerenderFromControls }));
   leftLegend.appendChild(createLegendRow({ label: 'Aggregate', color: '#6b7280', getter: () => showAggregateToggle.value, setter: v => { showAggregateToggle.value = v; }, onChange: rerenderFromControls }));
   leftLegend.appendChild(createLegendRow({ label: 'Death', color: '#000000', getter: () => showDeathToggle.value, setter: v => { showDeathToggle.value = v; }, glyphNode: makeLegendGlyph(deathSprites.C, 'transparent', 'black'), onChange: rerenderFromControls }));
   leftLegend.appendChild(createLegendRow({ label: 'Hit', color: '#000000', getter: () => showHitToggle.value, setter: v => { showHitToggle.value = v; }, glyphNode: makeLegendGlyph(hitSprites.C, 'transparent', 'black'), onChange: rerenderFromControls }));

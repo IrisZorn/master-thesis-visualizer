@@ -55,6 +55,19 @@ export function makeLegendGlyph(spriteUrl, backgroundColor, borderColor = "white
   return glyph;
 }
 
+// a continuous field has no single representative color, so its legend entry shows the whole
+// ramp rather than one swatch or a sprite
+export function makeLegendGradientGlyph(colors, borderColor = "#666") {
+  const glyph = document.createElement("div");
+  glyph.style.width = "28px";
+  glyph.style.height = "16px";
+  glyph.style.borderRadius = "3px";
+  glyph.style.border = `1px solid ${borderColor}`;
+  glyph.style.boxSizing = "border-box";
+  glyph.style.background = `linear-gradient(to right, ${colors.join(", ")})`;
+  return glyph;
+}
+
 export function createSliderMarkers({
   sliderMarkers,
   maxTime,
