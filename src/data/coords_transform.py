@@ -45,6 +45,17 @@ VIEWPORT_EDGE_MARGIN = 150
 # before being treated as a new instance -- they've plausibly walked out of frame and back,
 # rather than just gone undetected for no reason.
 MAX_ENEMY_REACQUIRE_GAP_NEAR_EDGE = 150
+# filter_points' big_dist cutoff (see its docstring) for player paths specifically, tighter than
+# the 700 default used for enemy tracks. Found via a Wally Warbles Cuphead run where a 2-frame
+# misdetection (explosion debris mistaken for Cuphead) sat 689px and 685px from his last real
+# position -- both just under the 700 default, so filter_points waved them through as plausible
+# medium jumps instead of rejecting them as glitches. Checked against every player path in both
+# levels' recorded playthroughs: 650 removes that glitch and changes nothing else for either
+# player in either level, so it's tight enough to catch this case without costing accuracy
+# elsewhere. Left as a player-only override (not a new default) since the same drop to 650
+# does measurably change several enemy tracks (e.g. Wally Warbles' willy_egg) that rely on the
+# looser cutoff.
+PLAYER_BIG_DIST = 650
 # tracks shorter than this after cleaning are almost always single-frame false
 # detections rather than a real sighting; kept low relative to
 # build_enemy_full_paths.py's MIN_TRACK_POINTS=20 because these enemies roam
@@ -54,6 +65,17 @@ MIN_ENEMY_TRACK_POINTS = 5
 # ghost to count as already covering the end of the run -- reuses extract_singular_points'
 # default time_thresh, the same "same event" window already used to cluster ghost/hit detections.
 END_OF_RUN_GHOST_WINDOW = 200
+# margin (px) by which the raw-labeled player's last known position must be farther from a
+# ghost cluster than the other player's, before that cluster's identity gets swapped away from
+# the detector's own class label (see resolve_ghost_swaps). Cuphead_ghost and mugman_ghost
+# differ only in halo stripe color and a tiny nose shape -- cues that wash out under this
+# level's obscured-vision effects, so the detector occasionally swaps which player's ghost
+# class a death gets labeled with. Comparing against each player's last known position usually
+# tells them apart, but only clearly when one player is a lot closer than the other -- when both
+# are near-tied (e.g. a simultaneous co-op wipe, exactly when the swap is most likely) the raw
+# label is trusted rather than guessed. 200 is a starting point (~1.4x an enemy's own glyph
+# size) pending a look at real swapped-ghost cases.
+GHOST_SWAP_MARGIN = 200
 # min cleaned path length for the end-of-run marker below to fire. A real player's path spans
 # hundreds/thousands of points; a handful of false-positive detections on the *other* player in
 # solo footage (e.g. stray "mugman" noise in a Cuphead-only run) cleans down to a tiny path
@@ -63,16 +85,22 @@ MIN_PATH_POINTS_FOR_END_MARKER = 20
 # how close a path's last known x has to be to the level's MAP_WIDTH to count as having reached
 # the end of the level. The camera stops scrolling once it's clamped to the map's right edge (see
 # visualize.js's cameraX clamp), so a player who actually finished can still be recorded up to
-# about this far short of the true edge while still reading as "at the end" on screen.
+# about this far short of the true edge while still reading as "at the end" on screen. This
+# default assumes a level much wider than one screen (a fraction of the viewport is a small
+# sliver of the map); a level whose arena is roughly one screen wide (e.g. a static-camera boss
+# fight) should set its own MAP_END_MARGIN in its constants module -- see
+# constants_wally_warbles.py for why 0 is appropriate there.
 MAP_END_MARGIN = VIEWPORT_WIDTH * 2 / 3
 # same threshold build_enemy_full_paths.py's X_MATCH_THRESHOLD uses to tell separate instances
-# of these two enemy types apart -- reused here to assign a raw detection to the known instance
-# it belongs to.
-FIXED_VERTICAL_X_MATCH_THRESHOLD = 170
-# how far outside a known instance's patrol range (y_min..y_max, from enemy_full_paths.pkl) a
-# detection may still fall and be treated as that enemy. The range is derived from many
-# playthroughs, so a real sighting barely exceeds it; this only absorbs minor per-run variation.
-FIXED_VERTICAL_Y_MARGIN = 120
+# of these enemy types apart -- reused here to assign a raw detection to the known instance it
+# belongs to, along whichever axis is fixed for that enemy (x for fixed-vertical, y for
+# fixed-horizontal).
+FIXED_AXIS_MATCH_THRESHOLD = 170
+# how far outside a known instance's patrol range (free_min..free_max along its non-fixed axis,
+# from enemy_full_paths.pkl) a detection may still fall and be treated as that enemy. The range
+# is derived from many playthroughs, so a real sighting barely exceeds it; this only absorbs
+# minor per-run variation.
+FIXED_AXIS_RANGE_MARGIN = 120
 # one cache file per level, since its keys are bare type numbers and those mean different enemies
 # in different levels. Written by build_enemy_full_paths.py.
 ENEMY_FULL_PATHS_DIR = Path(__file__).parent / "resources/enemy_full_paths"
@@ -117,12 +145,13 @@ def is_near_viewport_edge(enemy_x, player_x):
     return abs(abs(enemy_x - player_x) - VIEWPORT_WIDTH / 2) <= VIEWPORT_EDGE_MARGIN
 
 
-def clean_path_points(points, ghost_points=(), hit_points=()):
+def clean_path_points(points, ghost_points=(), hit_points=(), big_dist=700):
     # shared by both player and enemy path cleaning: strip glitches/big jumps, single-frame
     # spikes, and jump-out-and-back branches. ghost_points/hit_points are only meaningful for
     # players (see filter_points's break-marker insertion) -- enemies have no death event to
-    # justify a gap, so they're left empty.
-    cleaned = filter_points(points, ghost_points, hit_points)
+    # justify a gap, so they're left empty. big_dist is filter_points' "definitely fake" cutoff;
+    # see PLAYER_BIG_DIST for why players use a tighter one than the enemy-path default.
+    cleaned = filter_points(points, ghost_points, hit_points, big_dist=big_dist)
     cleaned = remove_reconnecting_jumps(cleaned)
     cleaned = remove_single_point_spikes(cleaned)
     return cleaned
@@ -197,32 +226,40 @@ def build_enemy_paths(
     return [points for points in cleaned_tracks if len(points) >= min_track_points]
 
 
-def build_fixed_vertical_paths(
+def build_fixed_axis_paths(
     values,
     instances,
-    x_match_threshold=FIXED_VERTICAL_X_MATCH_THRESHOLD,
-    y_margin=FIXED_VERTICAL_Y_MARGIN,
+    fixed_axis="x",
+    match_threshold=FIXED_AXIS_MATCH_THRESHOLD,
+    range_margin=FIXED_AXIS_RANGE_MARGIN,
     min_track_points=MIN_ENEMY_TRACK_POINTS,
 ):
-    # unlike build_enemy_paths, these enemies' possible x positions are already known ahead of
-    # time (instances, from enemy_full_paths.pkl) since they only ever patrol a fixed vertical
-    # line. So rather than splitting a run's detections into tracks via jump-distance/reacquire-gap
-    # heuristics meant for enemies that could be anywhere, just assign each detection to the
-    # known instance it's closest to and sort by time -- a detection gap no longer needs to be
-    # bridged by a heuristic, since there's no ambiguity about which instance it belongs to.
+    # unlike build_enemy_paths, these enemies' possible positions along their fixed axis are
+    # already known ahead of time (instances, from enemy_full_paths.pkl) since they only ever
+    # patrol a fixed line -- vertical (fixed_axis="x", e.g. toothy/wally) or horizontal
+    # (fixed_axis="y", e.g. injured_wally). So rather than splitting a run's detections into
+    # tracks via jump-distance/reacquire-gap heuristics meant for enemies that could be
+    # anywhere, just assign each detection to the known instance it's closest to along that
+    # axis and sort by time -- a detection gap no longer needs to be bridged by a heuristic,
+    # since there's no ambiguity about which instance it belongs to.
     if not values or not instances:
         return []
 
+    fixed_idx = 0 if fixed_axis == "x" else 1
+    free_idx = 1 - fixed_idx
+    free_axis = "y" if fixed_axis == "x" else "x"
+    free_min_key, free_max_key = f"{free_axis}_min", f"{free_axis}_max"
+
     buckets = [[] for _ in instances]
     for point in values:
-        if point[0] is None:
+        if point[fixed_idx] is None:
             continue
         nearest_index, nearest_dist = None, inf
         for index, instance in enumerate(instances):
-            d = abs(instance["x"] - point[0])
+            d = abs(instance[fixed_axis] - point[fixed_idx])
             if d < nearest_dist:
                 nearest_dist, nearest_index = d, index
-        if nearest_index is not None and nearest_dist <= x_match_threshold:
+        if nearest_index is not None and nearest_dist <= match_threshold:
             buckets[nearest_index].append(point)
 
     tracks = []
@@ -232,38 +269,116 @@ def build_fixed_vertical_paths(
         # clean_path_points is deliberately NOT used here. Its cleaners all assume roaming
         # motion and actively destroy this enemy's real movement: remove_reconnecting_jumps
         # treats "moves away and returns near where it started" as a detector glitch, which is
-        # exactly what patrolling up and down a fixed line looks like (it was deleting ~13% of
-        # all points overall and up to ~49% for a single instance, punching holes in otherwise
-        # perfectly smooth tracks); remove_single_point_spikes assumes they can't move far
-        # enough in a few frames for a round trip to be real; and filter_points reads a
-        # legitimate full-range traversal across a detection gap as one big glitch jump.
-        # Since points are already assigned to a known instance by x, the only cleaning that
-        # makes sense is rejecting detections outside that instance's known patrol band.
-        low = instance["y_min"] - y_margin
-        high = instance["y_max"] + y_margin
+        # exactly what patrolling a fixed line looks like (it was deleting ~13% of all points
+        # overall and up to ~49% for a single instance, punching holes in otherwise perfectly
+        # smooth tracks); remove_single_point_spikes assumes they can't move far enough in a
+        # few frames for a round trip to be real; and filter_points reads a legitimate
+        # full-range traversal across a detection gap as one big glitch jump. Since points are
+        # already assigned to a known instance by its fixed axis, the only cleaning that makes
+        # sense is rejecting detections outside that instance's known patrol band.
+        low = instance[free_min_key] - range_margin
+        high = instance[free_max_key] + range_margin
         points = [
             point for point in sorted(bucket, key=lambda point: point[2])
-            if point[1] is not None and low <= point[1] <= high
+            if point[free_idx] is not None and low <= point[free_idx] <= high
         ]
         if len(points) >= min_track_points:
             tracks.append(points)
     return tracks
 
 
-def clean_player_path(run, player, map_width, allow_end_marker=True, has_next_run=True):
-    # player is one entry of a level's PLAYERS tuple: {"main", "ghost", "hit"} -> type numbers.
-    # Returns the same shape, so callers can keep working stream-by-stream without knowing which
-    # character it is.
-    main_type, ghost_type, hit_type = player["main"], player["ghost"], player["hit"]
+def last_known_position(sorted_path, path_times, t):
+    # sorted_path/path_times are a player's own main-path points/timestamps, both already
+    # time-sorted. Returns the last point strictly before t (not the nearest by time either
+    # side, since a dead player's main stream has nothing after their death to be "nearest" to)
+    # -- or None if there's no such point.
+    idx = bisect_left(path_times, t)
+    if idx == 0:
+        return None
+    point = sorted_path[idx - 1]
+    return point if point[0] is not None else None
+
+
+def resolve_ghost_swaps(run, players):
+    # Pools both players' raw ghost-class detections and re-clusters them into death events
+    # together (same time/distance rule extract_singular_points uses per-player), instead of
+    # trusting each player's own raw class stream in isolation -- so a cluster gets assigned to
+    # whichever player it actually belongs to, not just whichever class the detector happened to
+    # label it with. See GHOST_SWAP_MARGIN for why the raw label is only overridden when that's
+    # a clear enough call. Assumes exactly two players (both this project's levels are 2-player
+    # co-op), since "the other player" is unambiguous only in that case.
+    ghost_types = [player["ghost"] for player in players]
+    main_paths = []
+    main_times = []
+    for player in players:
+        path = sorted(run.get(player["main"]) or [], key=lambda point: point[2])
+        main_paths.append(path)
+        main_times.append([point[2] for point in path])
+
+    pooled = [
+        (point, index)
+        for index, player in enumerate(players)
+        for point in (run.get(player["ghost"]) or [])
+    ]
+    pooled.sort(key=lambda entry: entry[0][2])
+
+    # same clustering rule as extract_singular_points (time_thresh=200, dist_thresh=700),
+    # reimplemented here rather than reused because each pooled point also carries which
+    # player's raw class it came from, which extract_singular_points has no way to track.
+    clusters = []
+    for point, raw_index in pooled:
+        assigned = None
+        for cluster in clusters:
+            anchor, _ = cluster[0]
+            if abs(anchor[2] - point[2]) <= 200 and point_distance(anchor, point) <= 700:
+                assigned = cluster
+                break
+        if assigned is None:
+            clusters.append([(point, raw_index)])
+        else:
+            assigned.append((point, raw_index))
+
+    resolved = {ghost_type: [] for ghost_type in ghost_types}
+    for cluster in clusters:
+        if len(cluster) < 8:
+            continue
+        first_point, raw_index = cluster[0]
+        other_index = 1 - raw_index
+
+        raw_last = last_known_position(main_paths[raw_index], main_times[raw_index], first_point[2])
+        other_last = last_known_position(main_paths[other_index], main_times[other_index], first_point[2])
+
+        chosen_index = raw_index
+        if raw_last is not None and other_last is not None:
+            dist_raw = point_distance(raw_last, first_point)
+            dist_other = point_distance(other_last, first_point)
+            if dist_raw - dist_other > GHOST_SWAP_MARGIN:
+                chosen_index = other_index
+
+        resolved[ghost_types[chosen_index]].append(first_point)
+
+    return resolved
+
+
+def clean_player_path(run, player, resolved_ghosts, map_width, map_end_margin, allow_end_marker=True, has_next_run=True):
+    # player is one entry of a level's PLAYERS tuple: {"main", "ghost", "hit"} -> type numbers,
+    # though "hit" may be absent for a level with no hit-reaction sprite (see
+    # constants_wally_warbles.py). Returns the same shape ({"main", "ghost", "hit"}, "hit" always
+    # present but empty when the level has none), so callers can keep working stream-by-stream
+    # without knowing which character it is.
+    main_type, ghost_type, hit_type = player["main"], player["ghost"], player.get("hit")
 
     # ghost_type is passed to filter_points raw (unsorted, un-deduped): it's only used there
     # to check whether *any* ghost detection falls inside a time gap, so dedup doesn't matter.
+    # This stays keyed off the detector's raw per-player class (not resolve_ghost_swaps' output)
+    # since a gap marker only needs "some death-like event happened here for this player", not
+    # a correctly-identified one.
     raw_ghosts = run[ghost_type]
     hits = extract_singular_points(run.get(hit_type) or [], min_cluster_size=8)
-    ghosts = extract_singular_points(sorted(raw_ghosts, key=lambda point: point[2]), min_cluster_size=8)
+    ghosts = resolved_ghosts
 
     path = sorted(run.get(main_type) or [], key=lambda point: point[2])
-    path = clean_path_points(path, raw_ghosts, hits)
+    path = clean_path_points(path, raw_ghosts, hits, big_dist=PLAYER_BIG_DIST)
 
     # a run that just stops (recording cuts off) rather than ending in a captured death looks
     # identical to a live player on the timeline. If the path's last known position isn't
@@ -278,7 +393,7 @@ def clean_player_path(run, player, map_width, allow_end_marker=True, has_next_ru
         # a later run in the same playthrough means this one ended in a death (the player
         # retried); with no later run, reaching the far edge of the map means they finished the
         # level instead, which isn't a death and shouldn't get a marker.
-        reached_map_end = last_point[0] is not None and last_point[0] >= map_width - MAP_END_MARGIN
+        reached_map_end = last_point[0] is not None and last_point[0] >= map_width - map_end_margin
         if has_next_run or not reached_map_end:
             ghosts = list(ghosts) + [last_point]
 
@@ -298,6 +413,72 @@ def stable_start_time(player_paths):
     return min(starts) if starts else 0
 
 
+def stage_start_times(my_dict, level, start_time):
+    # None for a level with no STAGES (e.g. Forest Follies) -- absence means "nothing to mark".
+    # Stage 0 always starts at the run's own stable start; every later stage starts at the first
+    # cleaned sighting (after that start) of any type in its set -- STAGE_2/STAGE_3 etc. only ever
+    # contain types belonging to that stage's boss, so their first real sighting is that stage's
+    # start. Reads my_dict (already-cleaned per-type tracks), not the raw run dict: raw detections
+    # include a handful of stray misdetections of e.g. willy/injured_wally in runs that never
+    # actually left stage 1, which build_enemy_paths/build_fixed_axis_paths already discard as
+    # noise (tracks under MIN_ENEMY_TRACK_POINTS) -- reading raw data here would let that same
+    # noise fabricate a stage the run never reached.
+    # None for a stage the run never reached (e.g. the recording ended mid-Stage-1).
+    #
+    # Stages can only increase, so a stage's marker only counts once the *previous* stage's own
+    # marker has actually been seen -- e.g. wally's stage-1 sprite is sometimes misdetected as his
+    # injured stage-3 form before willy (stage 2) ever shows up. Those early detections aren't a
+    # real sighting of anything, so this mutates my_dict to drop them outright rather than merely
+    # excluding them from the time calculation -- they must not be visualized either. If a stage's
+    # marker is never seen at all, every later stage's markers are dropped the same way, since none
+    # of them could be real either.
+    stages = getattr(level, "STAGES", None)
+    if not stages:
+        return None
+
+    def type_points(enemy_type):
+        value = my_dict.get(enemy_type) or []
+        if enemy_type in level.ENEMY_KEYS:
+            return [point for track in value for point in track]
+        return value
+
+    def drop_before(enemy_type, cutoff):
+        value = my_dict.get(enemy_type)
+        if not value:
+            return
+        if enemy_type in level.ENEMY_KEYS:
+            my_dict[enemy_type] = [
+                kept_track for kept_track in
+                ([point for point in track if point[2] >= cutoff] for track in value)
+                if kept_track
+            ]
+        else:
+            my_dict[enemy_type] = [point for point in value if point[2] >= cutoff]
+
+    starts = [start_time]
+    cutoff = start_time
+    previous_reached = True
+    for _, types in stages[1:]:
+        if not previous_reached:
+            for enemy_type in types:
+                drop_before(enemy_type, float("inf"))
+            starts.append(None)
+            continue
+
+        for enemy_type in types:
+            drop_before(enemy_type, cutoff)
+
+        detection_times = [point[2] for enemy_type in types for point in type_points(enemy_type)]
+        if detection_times:
+            cutoff = min(detection_times)
+            starts.append(cutoff)
+        else:
+            starts.append(None)
+            previous_reached = False
+
+    return starts
+
+
 def transform_run(run, level, is_coop=True, has_next_run=True):
     if not all(run.get(player["main"]) for player in level.PLAYERS):
         return None
@@ -305,9 +486,11 @@ def transform_run(run, level, is_coop=True, has_next_run=True):
     # only the primary player (PLAYERS[0]) is always really being tracked. In single-player
     # footage the others' detections are noise misread off the primary, so they get no
     # end-of-run marker -- there's no real run of theirs to mark the end of.
+    map_end_margin = getattr(level, "MAP_END_MARGIN", MAP_END_MARGIN)
+    resolved_ghosts = resolve_ghost_swaps(run, level.PLAYERS)
     cleaned_players = [
         clean_player_path(
-            run, player, level.MAP_WIDTH,
+            run, player, resolved_ghosts[player["ghost"]], level.MAP_WIDTH, map_end_margin,
             allow_end_marker=is_coop or index == 0,
             has_next_run=has_next_run,
         )
@@ -326,7 +509,13 @@ def transform_run(run, level, is_coop=True, has_next_run=True):
 
     for stream in ("main", "ghost", "hit"):
         for player, cleaned in zip(level.PLAYERS, cleaned_players):
-            my_dict[player[stream]] = [(x, y, t) for x, y, t in cleaned[stream]]
+            # a level without e.g. a hit-reaction sprite (constants_wally_warbles.py) has no type
+            # number for that stream at all -- skip it rather than writing a bogus my_dict[None]
+            # entry, which json.dumps would silently turn into a "null" key in the output.
+            stream_type = player.get(stream)
+            if stream_type is None:
+                continue
+            my_dict[stream_type] = [(x, y, t) for x, y, t in cleaned[stream]]
 
     # sorted() because these sets iterate in an arbitrary (per-process) order otherwise, which
     # would shuffle the output's key order from one run of the pipeline to the next
@@ -334,8 +523,14 @@ def transform_run(run, level, is_coop=True, has_next_run=True):
     for enemy_type in sorted(level.ENEMY_KEYS):
         enemy_values = [point for point in (run.get(enemy_type) or []) if point[2] >= start_time]
         if enemy_type in level.FIXED_VERTICAL_ENEMIES:
-            my_dict[enemy_type] = build_fixed_vertical_paths(enemy_values, known_instances.get(enemy_type, []))
+            my_dict[enemy_type] = build_fixed_axis_paths(enemy_values, known_instances.get(enemy_type, []), fixed_axis="x")
+        elif enemy_type in level.FIXED_HORIZONTAL_ENEMIES:
+            my_dict[enemy_type] = build_fixed_axis_paths(enemy_values, known_instances.get(enemy_type, []), fixed_axis="y")
         else:
             my_dict[enemy_type] = build_enemy_paths(enemy_values, player_path=player_paths[0])
+
+    stage_starts = stage_start_times(my_dict, level, start_time)
+    if stage_starts is not None:
+        my_dict["stage_starts"] = stage_starts
 
     return my_dict

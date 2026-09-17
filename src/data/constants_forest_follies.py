@@ -1,8 +1,8 @@
 # Everything level-specific lives in this module: the type numbering the detector assigns, which
 # of those numbers are players, and which behaviour category each enemy falls into. The rest of
-# the pipeline (coords_transform.py, run_loader.py, agg_loader.py, build_enemy_full_paths.py) is
-# level-agnostic and only ever looks a type up by its role here -- so a new level is a copy of
-# this file with its own numbers and sets.
+# the pipeline (coords_transform.py, run_coords_[level].json.py, agg_coords_[level].json.py,
+# build_enemy_full_paths.py) is level-agnostic and only ever looks a type up by its role here --
+# so a new level is a copy of this file with its own numbers and sets.
 
 # names this level's cached enemy data: resources/enemy_full_paths/<LEVEL>.pkl
 LEVEL = 'forest_follies'
@@ -41,6 +41,10 @@ FIXED_VERTICAL_ENEMIES = {
     toothy,
 }
 
+# no fixed-horizontal enemies in this level (see constants_wally_warbles.py's injured_wally for
+# one) -- kept as an empty set rather than omitted so level-agnostic code can always look it up.
+FIXED_HORIZONTAL_ENEMIES = set()
+
 STATIONARY_ENEMIES = {
     shroom,
     tulip,
@@ -59,9 +63,9 @@ MOVING_MINIMIZING_ENEMIES = {
 
 # every player character this level has, in priority order. PLAYERS[0] is the primary one: the
 # player a single-player recording's detections all get merged into (see
-# run_loader.merge_into_primary_player), and the one whose position stands in for the camera when
-# reconstructing enemy tracks. Each player produces three detection streams -- their normal
-# sprite, their death/ghost sprite, and their taking-a-hit sprite.
+# run_coords_[level].json.py's merge_into_primary_player), and the one whose position stands in
+# for the camera when reconstructing enemy tracks. Each player produces three detection streams --
+# their normal sprite, their death/ghost sprite, and their taking-a-hit sprite.
 PLAYERS = (
     {"main": cuphead, "ghost": cuphead_ghost, "hit": cuphead_hit},
     {"main": mugman, "ghost": mugman_ghost, "hit": mugman_hit},
@@ -70,4 +74,4 @@ PLAYER_KEYS = {type_id for player in PLAYERS for type_id in player.values()}
 # every enemy type whose paths get reconstructed per run in coords_transform.transform_run.
 # Types absent from all the sets above (bullets, effects, start markers) are passed through
 # untouched, so a type only needs listing here if it has a behaviour worth tracking.
-ENEMY_KEYS = FIXED_VERTICAL_ENEMIES | STATIONARY_ENEMIES | MOVING_ENEMIES
+ENEMY_KEYS = FIXED_VERTICAL_ENEMIES | FIXED_HORIZONTAL_ENEMIES | STATIONARY_ENEMIES | MOVING_ENEMIES

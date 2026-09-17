@@ -17,6 +17,7 @@ export function createEnemyVisualBuilder({
   enemyPaths,
   stationaryEnemyTypes,
   centeredGlyphEnemyTypes,
+  fixedHorizontalEnemyTypes = new Set(),
   neverFadeEnemyTypes = new Set(),
   holdLastPositionEnemyTypes = new Set(),
   minimizingEnemyTypes = new Set(),
@@ -24,7 +25,23 @@ export function createEnemyVisualBuilder({
   enemyInstanceXThreshold,
   stationaryInstanceThreshold,
   showEnemy,
+  stageStarts = [],
+  enemyStageIndex = {},
 }) {
+  // highest stage index whose start has passed, or null on a level with no stages (stageStarts
+  // empty) -- stage 0's start is always defined (the run's own stable start), so this is only
+  // null before any stage data exists at all.
+  function currentStageIndex() {
+    if (!stageStarts.length) return null;
+    const time = currentTimeProvider();
+    let index = null;
+    for (let i = 0; i < stageStarts.length; i++) {
+      const t = stageStarts[i];
+      if (t != null && t <= time) index = i;
+    }
+    return index;
+  }
+
   // shared by full-path-instances and stationary matching: an instance is "active" only while
   // we're still within its matched live track's last known detection -- no fade-out grace
   // period, so it greys out the instant tracking stops, not windowDelta later.
@@ -41,16 +58,14 @@ export function createEnemyVisualBuilder({
   }
 
   // once an instance/track goes inactive it keeps fading the longer it's been since last seen,
-  // instead of snapping to one fixed grey and staying there forever; floored so it never
-  // disappears entirely.
+  // all the way to fully invisible, instead of snapping to one fixed grey and staying there
+  // forever.
   const GREY_FADE_WINDOW = windowDelta * 2;
-  const MIN_GREY_ALPHA = 0.15;
   function instanceVisibility(lastDetection) {
-    if (lastDetection == null) return MIN_GREY_ALPHA;
+    if (lastDetection == null) return 0;
     const elapsed = currentTimeProvider() - lastDetection;
     if (elapsed <= 0) return 1;
-    const fade = 1 - clamp(elapsed / GREY_FADE_WINDOW, 0, 1);
-    return MIN_GREY_ALPHA + fade * (1 - MIN_GREY_ALPHA);
+    return 1 - clamp(elapsed / GREY_FADE_WINDOW, 0, 1);
   }
 
   // Across a detection gap the last known position is held rather than dropping to the resting
@@ -124,22 +139,25 @@ export function createEnemyVisualBuilder({
   // toothys ~150px apart with a 170px threshold): both instances would match either live track.
   // Matching each live track to its single nearest instance instead resolves the ambiguity,
   // since the threshold only needs to reject tracks that belong to neither.
-  function matchLiveTracksToInstances(liveTracks, instances) {
-    const instanceXs = instances.map((instance) =>
-      Array.isArray(instance.path) && instance.path.length >= 2 ? instance.path[0][0] : null
+  // fixedIndex is 0 (x) for a fixed-vertical enemy, 1 (y) for a fixed-horizontal one (see
+  // fixedHorizontalEnemyTypes) -- matching always happens along whichever coordinate identifies
+  // the instance, not along the one it patrols.
+  function matchLiveTracksToInstances(liveTracks, instances, fixedIndex) {
+    const instanceFixedCoords = instances.map((instance) =>
+      Array.isArray(instance.path) && instance.path.length >= 2 ? instance.path[0][fixedIndex] : null
     );
     const matches = new Map();
 
     for (const track of liveTracks) {
-      const validXs = (track || []).filter((point) => point && Number.isFinite(point[0]));
-      if (!validXs.length) continue;
-      const trackX = d3.mean(validXs, (point) => point[0]);
+      const validPoints = (track || []).filter((point) => point && Number.isFinite(point[fixedIndex]));
+      if (!validPoints.length) continue;
+      const trackFixed = d3.mean(validPoints, (point) => point[fixedIndex]);
 
       let nearestIndex = null;
       let nearestDist = Infinity;
-      instanceXs.forEach((instanceX, index) => {
-        if (instanceX == null) return;
-        const dist = Math.abs(instanceX - trackX);
+      instanceFixedCoords.forEach((instanceFixed, index) => {
+        if (instanceFixed == null) return;
+        const dist = Math.abs(instanceFixed - trackFixed);
         if (dist < nearestDist) {
           nearestDist = dist;
           nearestIndex = index;
@@ -214,11 +232,25 @@ export function createEnemyVisualBuilder({
       const liveTracks = enemyPathsByType[enemyType] || [];
 
       if (aggregate.mode === "full-path-instances" && Array.isArray(aggregate.instances)) {
-        const liveTrackByInstance = matchLiveTracksToInstances(liveTracks, aggregate.instances);
+        // wally/injured_wally (see enemyStageIndex) only actually exist during their own stage --
+        // hide them entirely outside it rather than leaving both patrol lines visible all run.
+        // Types absent from enemyStageIndex (e.g. Forest Follies' spiky_bulb/toothy, which has no
+        // stages at all) are never restricted here.
+        const requiredStage = enemyStageIndex[enemyType];
+        if (requiredStage != null && stageStarts.length && requiredStage !== currentStageIndex()) {
+          continue;
+        }
+
+        // fixed axis is x (a fixed-vertical patrol, e.g. toothy/wally) unless this type is
+        // listed as fixed-horizontal (e.g. injured_wally, which patrols side to side along a
+        // fixed height instead).
+        const isFixedHorizontal = fixedHorizontalEnemyTypes.has(enemyType);
+        const fixedIndex = isFixedHorizontal ? 1 : 0;
+        const liveTrackByInstance = matchLiveTracksToInstances(liveTracks, aggregate.instances, fixedIndex);
         for (const [index, instance] of aggregate.instances.entries()) {
           if (!Array.isArray(instance.path) || instance.path.length < 2) continue;
 
-          const instanceX = instance.path[0][0];
+          const instanceFixedCoord = instance.path[0][fixedIndex];
           const liveTrack = liveTrackByInstance.get(index) || null;
           // the detection describing where this enemy is *right now*, or null if it isn't being
           // detected at this moment -- no future lookahead, no stale past position.
@@ -234,10 +266,17 @@ export function createEnemyVisualBuilder({
           const instanceFill = instanceIsActive ? "rgba(64, 224, 208, 0.9)" : `rgba(148, 163, 184, ${(0.8 * visibility).toFixed(2)})`;
 
           visuals.paths.push({ id: `enemy-fullpath-${instance.id}`, points: instance.path, stroke: instanceStroke, width: 12, glow: true });
-          // undetected right now -> draw it at the bottom of its patrol path (fraction 1, i.e.
-          // y_max), where these enemies actually rest while idle.
+          // undetected right now -> draw it at the end of its patrol path (fraction 1), where
+          // these enemies actually rest while idle.
           const glyphPoint = currentPoint || pointAtFraction(instance.path, 1);
-          if (glyphPoint) visuals.glyphs.push({ id: `enemy-glyph-fullpath-${instance.id}`, type: enemyType, x: instanceX, y: glyphPoint[1], color: instanceFill, opacity: instanceIsActive ? 1 : visibility });
+          if (glyphPoint) {
+            // pin the fixed coordinate to the known instance's line rather than the (possibly
+            // slightly noisy) live detection, and take the free coordinate -- the one it
+            // actually moves along -- from the current/resting point.
+            const x = isFixedHorizontal ? glyphPoint[0] : instanceFixedCoord;
+            const y = isFixedHorizontal ? instanceFixedCoord : glyphPoint[1];
+            visuals.glyphs.push({ id: `enemy-glyph-fullpath-${instance.id}`, type: enemyType, x, y, color: instanceFill, opacity: instanceIsActive ? 1 : visibility });
+          }
         }
         continue;
       }
@@ -247,9 +286,10 @@ export function createEnemyVisualBuilder({
           const anchorX = anchor[0];
           const anchorY = anchor[1];
 
-          // match by 2D distance to the anchor rather than X alone: unlike the fixed-vertical
-          // enemies above, stationary anchors aren't confined to a shared column, so two
-          // different shrooms/tulips can sit at similar x but very different y.
+          // match by 2D distance to the anchor rather than a single axis: unlike the
+          // fixed-axis enemies above, stationary anchors aren't confined to a shared
+          // column/row, so two different shrooms/tulips can sit at similar x but very
+          // different y.
           const liveTrack = liveTracks.find((track) => {
             const validPoints = (track || []).filter((point) => point && Number.isFinite(point[0]) && Number.isFinite(point[1]));
             if (!validPoints.length) return false;

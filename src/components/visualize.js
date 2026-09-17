@@ -1,6 +1,6 @@
 import * as d3 from "d3";
-import { createLevelConfig, parseEnemySizes } from "./level-config.js";
-import { Toggle, createLegendRow, createSliderMarkers, makeLegendGlyph, makeLegendGradientGlyph } from "./viewer-controls.js";
+import { parseEnemySizes } from "./level-config.js";
+import { Toggle, createLegendRow, createSliderMarkers, createStageButtons, drawStageBoundaryMarkers, makeLegendGlyph, makeLegendGradientGlyph } from "./viewer-controls.js";
 import { createEnemyVisualBuilder, getEnemyGlyphSize, getEnemyGlyphSource } from "./viewer-enemies.js";
 import { BAND_BLUR_RADIUS, HEATMAP_COLORS, createEnemyHeatmapBuilder } from "./viewer-heatmap.js";
 import { clamp, findCurrentIndex, flattenEnemyPaths, makePathD, validTimedPoints } from "./viewer-helpers.js";
@@ -12,7 +12,8 @@ export async function createMapViewer({
   mapUrl,
   spriteUrls = {},
   enemySizesText = "",
-  levelConfig = createLevelConfig(),
+  levelConfig,
+  showMinimap = true,
   showCup: initialShowCup = true,
   showMug: initialShowMug = true,
   showDeath: initialShowDeath = true,
@@ -155,33 +156,36 @@ export async function createMapViewer({
   haloLayer.style.pointerEvents = 'none';
   mainSvg.insertBefore(haloLayer, mainLayers);
 
-  const miniSvg = document.createElementNS(NS, "svg");
-  miniSvg.setAttribute("width", miniW);
-  miniSvg.setAttribute("height", miniH);
-  miniSvg.setAttribute('viewBox', `0 0 ${miniW} ${miniH}`);
-  miniSvg.style.maxWidth = "100%";
-  miniSvg.style.height = "auto";
+  let miniSvg = null, miniHeatmapLayer = null, miniLayers = null;
+  if (showMinimap) {
+    miniSvg = document.createElementNS(NS, "svg");
+    miniSvg.setAttribute("width", miniW);
+    miniSvg.setAttribute("height", miniH);
+    miniSvg.setAttribute('viewBox', `0 0 ${miniW} ${miniH}`);
+    miniSvg.style.maxWidth = "100%";
+    miniSvg.style.height = "auto";
 
-  const miniImage = document.createElementNS(NS, "image");
-  // set both modern href and xlink:href for compatibility
-  miniImage.setAttribute('href', mapUrl);
-  miniImage.setAttributeNS('http://www.w3.org/1999/xlink', 'href', mapUrl);
-  miniImage.setAttribute("x", 0);
-  miniImage.setAttribute("y", 0);
-  miniImage.setAttribute("width", miniW);
-  miniImage.setAttribute("height", miniH);
-  miniImage.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-  miniSvg.appendChild(miniImage);
+    const miniImage = document.createElementNS(NS, "image");
+    // set both modern href and xlink:href for compatibility
+    miniImage.setAttribute('href', mapUrl);
+    miniImage.setAttributeNS('http://www.w3.org/1999/xlink', 'href', mapUrl);
+    miniImage.setAttribute("x", 0);
+    miniImage.setAttribute("y", 0);
+    miniImage.setAttribute("width", miniW);
+    miniImage.setAttribute("height", miniH);
+    miniImage.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+    miniSvg.appendChild(miniImage);
 
-  const miniHeatmapLayer = document.createElementNS(NS, "g");
-  miniHeatmapLayer.setAttribute("class", "mini-heatmap-layer");
-  miniHeatmapLayer.setAttribute("filter", "url(#heat-blur)");
-  miniHeatmapLayer.style.pointerEvents = "none";
-  miniSvg.appendChild(miniHeatmapLayer);
+    miniHeatmapLayer = document.createElementNS(NS, "g");
+    miniHeatmapLayer.setAttribute("class", "mini-heatmap-layer");
+    miniHeatmapLayer.setAttribute("filter", "url(#heat-blur)");
+    miniHeatmapLayer.style.pointerEvents = "none";
+    miniSvg.appendChild(miniHeatmapLayer);
 
-  const miniLayers = document.createElementNS(NS, "g");
-  miniLayers.setAttribute("class", "mini-layers");
-  miniSvg.appendChild(miniLayers);
+    miniLayers = document.createElementNS(NS, "g");
+    miniLayers.setAttribute("class", "mini-layers");
+    miniSvg.appendChild(miniLayers);
+  }
 
   /* ---------------- SCALE ---------------- */
 
@@ -198,8 +202,12 @@ export async function createMapViewer({
   const enemyPathsByType = Object.fromEntries(
     levelConfig.trackedEnemyTypes.map((type) => [type, data[0][type] || []])
   );
-  const aggCup = aggr_players?.[levelConfig.playerTypes.cup] || [];
-  const aggMug = aggr_players?.[levelConfig.playerTypes.mug] || [];
+  // level-wide fallback, used before any stage data exists or on a level with no stages at all
+  // (aggr_players.stages absent) -- render() below picks the active stage's own aggregate instead
+  // when one is available, so the pooled path/heatmap actually change as playback crosses a stage
+  // boundary rather than always showing the whole level's aggregate.
+  const baseAggCup = aggr_players?.[levelConfig.playerTypes.cup] || [];
+  const baseAggMug = aggr_players?.[levelConfig.playerTypes.mug] || [];
   const cupDeathRaw = data[0][levelConfig.playerTypes.cupDeath] || [];
   const mugDeathRaw = data[0][levelConfig.playerTypes.mugDeath] || [];
   const deathSprites = {
@@ -221,6 +229,10 @@ export async function createMapViewer({
   const miniPlayerMarkerRadius = 15;
   const cupHitRaw = data[0][levelConfig.playerTypes.cupHit] || [];
   const mugHitRaw = data[0][levelConfig.playerTypes.mugHit] || [];
+  // some levels have no hit-reaction detection stream at all (e.g. Wally Warbles) -- without one
+  // there's nothing to base an HP count on, so the HP halo and its legend entry are hidden
+  // entirely rather than showing a halo that's always full HP.
+  const hasHitTracking = Boolean(levelConfig.playerTypes.cupHit || levelConfig.playerTypes.mugHit);
   const enemySprites = Object.fromEntries(
     Object.entries(levelConfig.enemyGlyphSources).map(([type, spriteKey]) => [type, spriteUrls[spriteKey]])
   );
@@ -241,6 +253,15 @@ export async function createMapViewer({
   const mugDeath = validTimedPoints(mugDeathRaw);
   const cupHit = validTimedPoints(cupHitRaw);
   const mugHit = validTimedPoints(mugHitRaw);
+
+  // cup/mug (the main path) has each death/hit's own position folded into it (see
+  // coords_transform.py's clean_player_path) so the trail-line segments have somewhere to end
+  // at a death/hit instead of jumping straight across the gap -- but that same real coordinate
+  // makes a ghost/hit point look like a live position to findCurrentIndex, which just holds at
+  // "the last point at or before currentTime" with no notion of which points are real gameplay.
+  // Cross-referencing against these timestamps lets the render loop below tell the two apart.
+  const cupNonLiveTimes = new Set([...cupDeath, ...cupHit].map(p => p[2]));
+  const mugNonLiveTimes = new Set([...mugDeath, ...mugHit].map(p => p[2]));
 
   /* ---------------- TIME ---------------- */
 
@@ -287,6 +308,49 @@ export async function createMapViewer({
 
   sliderWrapper.append(slider, sliderMarkers);
 
+  /* ---------------- STAGES ---------------- */
+  // data[0].stage_starts (see coords_transform.stage_start_times) is only present on levels with
+  // STAGES (e.g. Wally Warbles) -- absent on Forest Follies, which leaves stageStarts empty and
+  // skips this whole block.
+  const stageStarts = data[0].stage_starts || [];
+  const stageNames = levelConfig.stageNames || [];
+  let stageButtonsRow = null;
+
+  if (stageStarts.length) {
+    const stageMarkersLayer = document.createElement('div');
+    stageMarkersLayer.style.position = 'absolute';
+    stageMarkersLayer.style.left = '0';
+    stageMarkersLayer.style.right = '0';
+    stageMarkersLayer.style.top = '0';
+    stageMarkersLayer.style.bottom = '0';
+    stageMarkersLayer.style.pointerEvents = 'none';
+    sliderWrapper.appendChild(stageMarkersLayer);
+
+    drawStageBoundaryMarkers({ layer: stageMarkersLayer, startTime, maxTime, stageStarts, stageNames });
+
+    stageButtonsRow = createStageButtons({
+      stageStarts,
+      stageNames,
+      onSelect: (t) => {
+        slider.value = t;
+        currentTime = t;
+        render();
+      },
+    });
+  }
+
+  // highest stage index whose start has passed, or null on a level with no stages (stageStarts
+  // empty) -- used to pick which stage's own aggregate (pooled path/heatmap) is showing right now.
+  function currentStageIndex() {
+    if (!stageStarts.length) return null;
+    let index = null;
+    for (let i = 0; i < stageStarts.length; i++) {
+      const t = stageStarts[i];
+      if (t != null && t <= currentTime) index = i;
+    }
+    return index;
+  }
+
   /* ---------------- LAYER TOGGLES / POPUP LEGEND ---------------- */
   // Layer visibility flags (use small Toggle helper for clarity)
   const showCupToggle = new Toggle(initialShowCup);
@@ -297,10 +361,25 @@ export async function createMapViewer({
   const showAggregateToggle = new Toggle(initialShowAggregate);
   const showHeatmapToggle = new Toggle(initialShowHeatmap);
 
-  // built from the aggregate across playthroughs (agg_loader.aggregate_enemy_density), not from
-  // the run currently being scrubbed -- missing if the data loader's cache predates that key, in
-  // which case the overlay simply stays empty
-  const getHeatmap = createEnemyHeatmapBuilder({ density: aggr_players?.enemy_density });
+  // built from the aggregate across playthroughs (agg_coords_[level].json.py's
+  // aggregate_enemy_density), not from the run currently being scrubbed -- missing if the data
+  // loader's cache predates that key, in which case the overlay simply stays empty. Level-wide
+  // fallback, used before any stage data exists or on a level with no stages.
+  const getBaseHeatmap = createEnemyHeatmapBuilder({ density: aggr_players?.enemy_density });
+
+  // one lazily-built, cached heatmap per stage (agg_coords_[level].json.py's aggregated_paths.stages
+  // -- each stage's own aggregate_enemy_density), so the field actually changes as playback crosses
+  // a stage boundary instead of always showing the whole level's density. Mirrors getBaseHeatmap's
+  // own build-once-then-cache behavior, just keyed per stage rather than one fixed density.
+  const stageHeatmapBuilders = new Map();
+  function getHeatmapForStage(stageIndex) {
+    const stageData = stageIndex != null ? aggr_players?.stages?.[stageIndex] : null;
+    if (!stageData) return getBaseHeatmap();
+    if (!stageHeatmapBuilders.has(stageIndex)) {
+      stageHeatmapBuilders.set(stageIndex, createEnemyHeatmapBuilder({ density: stageData.enemy_density }));
+    }
+    return stageHeatmapBuilders.get(stageIndex)();
+  }
 
   const enemyPaths = flattenEnemyPaths(enemyPathsByType);
   const { buildEnemyVisuals, filterRecentPoints } = createEnemyVisualBuilder({
@@ -311,6 +390,7 @@ export async function createMapViewer({
     enemyPaths,
     stationaryEnemyTypes,
     centeredGlyphEnemyTypes,
+    fixedHorizontalEnemyTypes: levelConfig.fixedHorizontalEnemyTypes,
     neverFadeEnemyTypes: levelConfig.neverFadeEnemyTypes,
     holdLastPositionEnemyTypes: levelConfig.holdLastPositionEnemyTypes,
     minimizingEnemyTypes: levelConfig.minimizingEnemyTypes,
@@ -318,6 +398,8 @@ export async function createMapViewer({
     enemyInstanceXThreshold: ENEMY_INSTANCE_X_THRESHOLD,
     stationaryInstanceThreshold: STATIONARY_INSTANCE_THRESHOLD,
     showEnemy: () => showEnemyToggle.value,
+    stageStarts,
+    enemyStageIndex: levelConfig.enemyStageIndex || {},
   });
 
   // fade a segment out the further currentTime has moved past it -- never fade one in ahead of
@@ -351,6 +433,7 @@ export async function createMapViewer({
 
   const setSliderMarkers = createSliderMarkers({
     sliderMarkers,
+    startTime,
     maxTime,
     showDeath: () => showDeathToggle.value,
     showHit: () => showHitToggle.value,
@@ -369,14 +452,27 @@ export async function createMapViewer({
   function isFiniteCoord(v) { return v != null && Number.isFinite(v); }
 
   function render() {
+    // pick the currently active stage's own pooled path (falls back to the level-wide aggregate
+    // before any stage starts, or on a level with no stages at all) -- shadows the module-level
+    // baseAggCup/baseAggMug for the rest of this render pass so every use below (main overlay,
+    // minimap) automatically follows the same choice.
+    const stageIndex = currentStageIndex();
+    const stageAggregate = stageIndex != null ? aggr_players?.stages?.[stageIndex] : null;
+    const aggCup = stageAggregate ? (stageAggregate[levelConfig.playerTypes.cup] || []) : baseAggCup;
+    const aggMug = stageAggregate ? (stageAggregate[levelConfig.playerTypes.mug] || []) : baseAggMug;
+
     const cupIndex = findCurrentIndex(cup, currentTime);
     const mugIndex = findCurrentIndex(mug, currentTime);
 
     const cupSample = cup[cupIndex] || [null, null, 0];
     const mugSample = mug[mugIndex] || [null, null, 0];
 
-    const cupX = cupSample[0], cupY = cupSample[1];
-    const mugX = mugSample[0], mugY = mugSample[1];
+    // a held-over sample that's actually a death/hit marker (see cupNonLiveTimes/mugNonLiveTimes
+    // above) isn't a live position, even though it carries real coordinates for the trail line
+    const cupIsLive = !cupNonLiveTimes.has(cupSample[2]);
+    const mugIsLive = !mugNonLiveTimes.has(mugSample[2]);
+    const cupX = cupIsLive ? cupSample[0] : null, cupY = cupIsLive ? cupSample[1] : null;
+    const mugX = mugIsLive ? mugSample[0] : null, mugY = mugIsLive ? mugSample[1] : null;
 
     // update last-valid coordinates only when samples are numeric
     if (isFiniteCoord(cupX) && isFiniteCoord(cupY)) { lastValidCupX = cupX; lastValidCupY = cupY; }
@@ -420,10 +516,12 @@ export async function createMapViewer({
     // set main viewBox to implement camera
     mainSvg.setAttribute('viewBox', `${cameraX} ${cameraY} ${viewportW} ${viewportH}`);
 
-    // enemy heatmap: aggregated over every playthrough, so it doesn't change with currentTime --
-    // the contours are built once on first activation and only bound/unbound from here on. The
-    // contour geometry is in grid cells, so each layer scales it into its own coordinate space.
-    const heatmap = showHeatmapToggle.value ? getHeatmap() : null;
+    // enemy heatmap: aggregated over every playthrough within the currently active stage (falls
+    // back to the level-wide field before any stage starts, or on a level with no stages), so it
+    // only changes when currentTime crosses a stage boundary, not on every scrub. Each stage's
+    // contours are built once on first activation and cached from then on (see getHeatmapForStage).
+    // The contour geometry is in grid cells, so each layer scales it into its own coordinate space.
+    const heatmap = showHeatmapToggle.value ? getHeatmapForStage(stageIndex) : null;
     const heatmapBands = heatmap?.bands ?? [];
 
     function joinHeatmapBands(layer, className, transform) {
@@ -445,11 +543,13 @@ export async function createMapViewer({
     }
 
     joinHeatmapBands(heatmapLayer, 'heat-band', heatmap ? `scale(${heatmap.cellSize})` : null);
-    joinHeatmapBands(
-      miniHeatmapLayer,
-      'mini-heat-band',
-      heatmap ? `scale(${heatmap.cellSize * scaleX}, ${heatmap.cellSize * scaleY})` : null
-    );
+    if (showMinimap) {
+      joinHeatmapBands(
+        miniHeatmapLayer,
+        'mini-heat-band',
+        heatmap ? `scale(${heatmap.cellSize * scaleX}, ${heatmap.cellSize * scaleY})` : null
+      );
+    }
 
     // prepare segment data for cup and mug (only within WINDOW_DELTA range behind currentTime,
     // never ahead of it)
@@ -533,8 +633,10 @@ export async function createMapViewer({
     }
 
     const haloGroups = [];
-    if (showCupToggle.value) haloGroups.push(...buildHpTrailGroups(cupSegs));
-    if (showMugToggle.value) haloGroups.push(...buildHpTrailGroups(mugSegs));
+    if (hasHitTracking) {
+      if (showCupToggle.value) haloGroups.push(...buildHpTrailGroups(cupSegs));
+      if (showMugToggle.value) haloGroups.push(...buildHpTrailGroups(mugSegs));
+    }
 
     const haloBaseSel = d3
         .select(haloLayer)
@@ -703,6 +805,7 @@ export async function createMapViewer({
       exit => exit.remove()
     )
       .attr('transform', d => `translate(${d.x}, ${d.y})`)
+      .attr('opacity', d => d.opacity ?? 1)
       .each(function(d) {
         const group = d3.select(this);
         const { w, h } = getEnemyGlyphSize(d.type, enemyGlyphSize, levelConfig.defaultGlyphSize);
@@ -729,7 +832,6 @@ export async function createMapViewer({
         const sprite = this.querySelector('.enemy-glyph-sprite');
         if (sprite) {
           sprite.setAttribute('src', getEnemyGlyphSource(d.type, enemySprites, spriteUrls, levelConfig.enemySpritesFallbackKey));
-          sprite.style.opacity = String(d.opacity ?? 1);
           sprite.style.filter = 'none';
         }
       });
@@ -752,11 +854,16 @@ export async function createMapViewer({
       exit => exit.remove()
     );
 
-    // players: draw cup and mug separately based on flags (use last-valid if current sample is null)
-    const displayCupX = isFiniteCoord(cupX) ? cupX : lastValidCupX;
-    const displayCupY = isFiniteCoord(cupY) ? cupY : lastValidCupY;
-    const displayMugX = isFiniteCoord(mugX) ? mugX : lastValidMugX;
-    const displayMugY = isFiniteCoord(mugY) ? mugY : lastValidMugY;
+    // players: draw cup and mug separately based on flags -- no last-valid fallback here (unlike
+    // the camera-follow logic above, which needs it to avoid jerking during a temporary death):
+    // the glyph should only appear where a player is currently detected, so it disappears for
+    // the whole of any gap (temporary death/ghost or the final one) and reappears on its own
+    // once real detection resumes (e.g. a revival), instead of staying frozen at their last
+    // known spot for the duration of the gap.
+    const displayCupX = cupX;
+    const displayCupY = cupY;
+    const displayMugX = mugX;
+    const displayMugY = mugY;
 
     const players = [];
     if (showCupToggle.value && isFiniteCoord(displayCupX) && isFiniteCoord(displayCupY)) players.push({id:'cup', x:displayCupX, y:displayCupY, sprite: playerSprites.cup, w: playerGlyphSize.cup.w, h: playerGlyphSize.cup.h});
@@ -930,64 +1037,66 @@ export async function createMapViewer({
     mainSel.selectAll('.death').each(function() { this.parentNode?.appendChild(this); });
 
     // minimap: draw small scaled paths and viewport rect
-    const miniSel = d3.select(miniLayers);
+    if (showMinimap) {
+      const miniSel = d3.select(miniLayers);
 
-    const miniAggCupPoints = aggCup.filter(p => p && p[0] != null).map(p => ({ x: p[0] * scaleX, y: p[1] * scaleY }));
-    const miniAggMugPoints = aggMug.filter(p => p && p[0] != null).map(p => ({ x: p[0] * scaleX, y: p[1] * scaleY }));
-    const miniPlayers = [];
-    if (showCupToggle.value && isFiniteCoord(displayCupX) && isFiniteCoord(displayCupY)) {
-      miniPlayers.push({ id: 'mini-cup-player', x: displayCupX * scaleX, y: displayCupY * scaleY, color: 'red', r: miniPlayerMarkerRadius });
+      const miniAggCupPoints = aggCup.filter(p => p && p[0] != null).map(p => ({ x: p[0] * scaleX, y: p[1] * scaleY }));
+      const miniAggMugPoints = aggMug.filter(p => p && p[0] != null).map(p => ({ x: p[0] * scaleX, y: p[1] * scaleY }));
+      const miniPlayers = [];
+      if (showCupToggle.value && isFiniteCoord(displayCupX) && isFiniteCoord(displayCupY)) {
+        miniPlayers.push({ id: 'mini-cup-player', x: displayCupX * scaleX, y: displayCupY * scaleY, color: 'red', r: miniPlayerMarkerRadius });
+      }
+      if (showMugToggle.value && isFiniteCoord(displayMugX) && isFiniteCoord(displayMugY)) {
+        miniPlayers.push({ id: 'mini-mug-player', x: displayMugX * scaleX, y: displayMugY * scaleY, color: 'blue', r: miniPlayerMarkerRadius });
+      }
+
+      function makePolyPoints(arr) { return arr.map(d=>`${d.x},${d.y}`).join(' '); }
+      const miniAggCup = miniSel.selectAll('.mini-agg-cup').data(showAggregateToggle.value && miniAggCupPoints.length > 1 ? [miniAggCupPoints] : []);
+      miniAggCup.join(
+        enter => enter.append('polyline').attr('class','mini-agg-cup')
+          .attr('points', makePolyPoints)
+          .attr('fill','none').attr('stroke','rgba(255,0,0,0.35)').attr('stroke-width',20),
+        update => update.attr('points', makePolyPoints).attr('stroke','rgba(255,0,0,0.35)').attr('stroke-width',20),
+        exit => exit.remove()
+      );
+
+      const miniAggMug = miniSel.selectAll('.mini-agg-mug').data(showAggregateToggle.value && miniAggMugPoints.length > 1 ? [miniAggMugPoints] : []);
+      miniAggMug.join(
+        enter => enter.append('polyline').attr('class','mini-agg-mug')
+          .attr('points', makePolyPoints)
+          .attr('fill','none').attr('stroke','rgba(0,0,255,0.35)').attr('stroke-width',20),
+        update => update.attr('points', makePolyPoints).attr('stroke','rgba(0,0,255,0.35)').attr('stroke-width',20),
+        exit => exit.remove()
+      );
+
+      const miniPlayerSel = miniSel.selectAll('.mini-player').data(miniPlayers, d => d.id);
+      miniPlayerSel.join(
+        enter => enter.append('circle').attr('class', 'mini-player')
+          .attr('cx', d => d.x).attr('cy', d => d.y).attr('r', d => d.r)
+          .attr('fill', d => d.color)
+          .attr('stroke', 'white')
+          .attr('stroke-width', 2),
+        update => update
+          .attr('cx', d => d.x).attr('cy', d => d.y).attr('r', d => d.r)
+          .attr('fill', d => d.color),
+        exit => exit.remove()
+      );
+
+      // viewport rect on minimap
+      const rect = miniSel.selectAll('.viewport-rect').data([{
+        x: cameraX * scaleX,
+        y: cameraY * scaleY,
+        w: viewportW * scaleX,
+        h: viewportH * scaleY
+      }]);
+      rect.join(
+        enter => enter.append('rect').attr('class','viewport-rect')
+          .attr('x',d=>d.x).attr('y',d=>d.y).attr('width',d=>d.w).attr('height',d=>d.h)
+          .attr('fill','none').attr('stroke','lime').attr('stroke-width',7),
+        update => update.attr('x',d=>d.x).attr('y',d=>d.y).attr('width',d=>d.w).attr('height',d=>d.h).attr('stroke-width',7),
+        exit => exit.remove()
+      );
     }
-    if (showMugToggle.value && isFiniteCoord(displayMugX) && isFiniteCoord(displayMugY)) {
-      miniPlayers.push({ id: 'mini-mug-player', x: displayMugX * scaleX, y: displayMugY * scaleY, color: 'blue', r: miniPlayerMarkerRadius });
-    }
-
-    function makePolyPoints(arr) { return arr.map(d=>`${d.x},${d.y}`).join(' '); }
-        const miniAggCup = miniSel.selectAll('.mini-agg-cup').data(showAggregateToggle.value && miniAggCupPoints.length > 1 ? [miniAggCupPoints] : []);
-        miniAggCup.join(
-          enter => enter.append('polyline').attr('class','mini-agg-cup')
-            .attr('points', makePolyPoints)
-            .attr('fill','none').attr('stroke','rgba(255,0,0,0.35)').attr('stroke-width',20),
-          update => update.attr('points', makePolyPoints).attr('stroke','rgba(255,0,0,0.35)').attr('stroke-width',20),
-          exit => exit.remove()
-        );
-
-        const miniAggMug = miniSel.selectAll('.mini-agg-mug').data(showAggregateToggle.value && miniAggMugPoints.length > 1 ? [miniAggMugPoints] : []);
-        miniAggMug.join(
-          enter => enter.append('polyline').attr('class','mini-agg-mug')
-            .attr('points', makePolyPoints)
-            .attr('fill','none').attr('stroke','rgba(0,0,255,0.35)').attr('stroke-width',20),
-          update => update.attr('points', makePolyPoints).attr('stroke','rgba(0,0,255,0.35)').attr('stroke-width',20),
-          exit => exit.remove()
-        );
-
-    const miniPlayerSel = miniSel.selectAll('.mini-player').data(miniPlayers, d => d.id);
-    miniPlayerSel.join(
-      enter => enter.append('circle').attr('class', 'mini-player')
-        .attr('cx', d => d.x).attr('cy', d => d.y).attr('r', d => d.r)
-        .attr('fill', d => d.color)
-        .attr('stroke', 'white')
-        .attr('stroke-width', 2),
-      update => update
-        .attr('cx', d => d.x).attr('cy', d => d.y).attr('r', d => d.r)
-        .attr('fill', d => d.color),
-      exit => exit.remove()
-    );
-
-    // viewport rect on minimap
-    const rect = miniSel.selectAll('.viewport-rect').data([{
-      x: cameraX * scaleX,
-      y: cameraY * scaleY,
-      w: viewportW * scaleX,
-      h: viewportH * scaleY
-    }]);
-    rect.join(
-      enter => enter.append('rect').attr('class','viewport-rect')
-        .attr('x',d=>d.x).attr('y',d=>d.y).attr('width',d=>d.w).attr('height',d=>d.h)
-        .attr('fill','none').attr('stroke','lime').attr('stroke-width',7),
-      update => update.attr('x',d=>d.x).attr('y',d=>d.y).attr('width',d=>d.w).attr('height',d=>d.h).attr('stroke-width',7),
-      exit => exit.remove()
-    );
   }
 
   /* ---------------- SLIDER EVENTS ---------------- */
@@ -1003,7 +1112,9 @@ export async function createMapViewer({
   container.style.flexDirection = 'column';
   container.style.gap = '10px';
 
-  container.append(miniSvg, mainSvg, sliderWrapper);
+  if (showMinimap) container.append(miniSvg);
+  container.append(mainSvg, sliderWrapper);
+  if (stageButtonsRow) container.append(stageButtonsRow);
 
   // create main wrapper and move mainSvg inside it so legend won't overlap minimap
   const mainWrapper = document.createElement('div');
@@ -1042,15 +1153,50 @@ export async function createMapViewer({
     }
   };
 
-  leftLegend.appendChild(createLegendRow({ label: 'Cup', color: '#ff0000', getter: () => showCupToggle.value, setter: v => { showCupToggle.value = v; }, onChange: rerenderFromControls }));
-  leftLegend.appendChild(createLegendRow({ label: 'Mug', color: '#0000ff', getter: () => showMugToggle.value, setter: v => { showMugToggle.value = v; }, onChange: rerenderFromControls }));
+  // header row toggles the body's visibility -- collapsed by default state stays expanded, only
+  // the arrow glyph and body display flip, so nothing about the legend's own toggles is affected
+  const legendHeader = document.createElement('div');
+  legendHeader.style.display = 'flex';
+  legendHeader.style.alignItems = 'center';
+  legendHeader.style.justifyContent = 'space-between';
+  legendHeader.style.gap = '12px';
+  legendHeader.style.cursor = 'pointer';
+  legendHeader.style.userSelect = 'none';
+  legendHeader.style.fontWeight = 'bold';
+
+  const legendTitle = document.createElement('div');
+  legendTitle.textContent = 'Legend';
+
+  const legendArrow = document.createElement('div');
+  legendArrow.textContent = '▾'; // ▾, flips to ▸ when collapsed
+  legendArrow.style.fontSize = '12px';
+
+  legendHeader.append(legendTitle, legendArrow);
+
+  const legendBody = document.createElement('div');
+  legendBody.style.display = 'flex';
+  legendBody.style.flexDirection = 'column';
+  legendBody.style.gap = '6px';
+
+  let legendCollapsed = false;
+  legendHeader.addEventListener('click', () => {
+    legendCollapsed = !legendCollapsed;
+    legendBody.style.display = legendCollapsed ? 'none' : 'flex';
+    legendArrow.textContent = legendCollapsed ? '▸' : '▾';
+  });
+
+  legendBody.appendChild(createLegendRow({ label: 'Cup', color: '#ff0000', getter: () => showCupToggle.value, setter: v => { showCupToggle.value = v; }, onChange: rerenderFromControls }));
+  legendBody.appendChild(createLegendRow({ label: 'Mug', color: '#0000ff', getter: () => showMugToggle.value, setter: v => { showMugToggle.value = v; }, onChange: rerenderFromControls }));
   const enemyLegendSpriteKey = levelConfig.enemyLegendSpriteKey
     ?? Object.values(levelConfig.enemyGlyphSources).find((spriteKey) => spriteUrls[spriteKey]);
-  leftLegend.appendChild(createLegendRow({ label: 'Enemies', color: '#40e0d0', getter: () => showEnemyToggle.value, setter: v => { showEnemyToggle.value = v; }, glyphNode: makeLegendGlyph(enemyLegendSpriteKey ? spriteUrls[enemyLegendSpriteKey] : hitSprites.C, 'rgba(64, 224, 208, 0.18)', '#40e0d0'), onChange: rerenderFromControls }));
-  leftLegend.appendChild(createLegendRow({ label: 'Enemy heatmap', color: HEATMAP_COLORS[HEATMAP_COLORS.length - 1], getter: () => showHeatmapToggle.value, setter: v => { showHeatmapToggle.value = v; }, glyphNode: makeLegendGradientGlyph(HEATMAP_COLORS), onChange: rerenderFromControls }));
-  leftLegend.appendChild(createLegendRow({ label: 'Aggregate', color: '#6b7280', getter: () => showAggregateToggle.value, setter: v => { showAggregateToggle.value = v; }, onChange: rerenderFromControls }));
-  leftLegend.appendChild(createLegendRow({ label: 'Death', color: '#000000', getter: () => showDeathToggle.value, setter: v => { showDeathToggle.value = v; }, glyphNode: makeLegendGlyph(deathSprites.C, 'transparent', 'black'), onChange: rerenderFromControls }));
-  leftLegend.appendChild(createLegendRow({ label: 'Hit', color: '#000000', getter: () => showHitToggle.value, setter: v => { showHitToggle.value = v; }, glyphNode: makeLegendGlyph(hitSprites.C, 'transparent', 'black'), onChange: rerenderFromControls }));
+  legendBody.appendChild(createLegendRow({ label: 'Enemies', color: '#40e0d0', getter: () => showEnemyToggle.value, setter: v => { showEnemyToggle.value = v; }, glyphNode: makeLegendGlyph(enemyLegendSpriteKey ? spriteUrls[enemyLegendSpriteKey] : hitSprites.C, 'rgba(64, 224, 208, 0.18)', '#40e0d0'), onChange: rerenderFromControls }));
+  legendBody.appendChild(createLegendRow({ label: 'Enemy heatmap', color: HEATMAP_COLORS[HEATMAP_COLORS.length - 1], getter: () => showHeatmapToggle.value, setter: v => { showHeatmapToggle.value = v; }, glyphNode: makeLegendGradientGlyph(HEATMAP_COLORS), onChange: rerenderFromControls }));
+  legendBody.appendChild(createLegendRow({ label: 'Aggregate', color: '#6b7280', getter: () => showAggregateToggle.value, setter: v => { showAggregateToggle.value = v; }, onChange: rerenderFromControls }));
+  legendBody.appendChild(createLegendRow({ label: 'Death', color: '#000000', getter: () => showDeathToggle.value, setter: v => { showDeathToggle.value = v; }, glyphNode: makeLegendGlyph(deathSprites.C, 'transparent', 'black'), onChange: rerenderFromControls }));
+  if (hasHitTracking) {
+    legendBody.appendChild(createLegendRow({ label: 'Hit', color: '#000000', getter: () => showHitToggle.value, setter: v => { showHitToggle.value = v; }, glyphNode: makeLegendGlyph(hitSprites.C, 'transparent', 'black'), onChange: rerenderFromControls }));
+  }
+  leftLegend.append(legendHeader, legendBody);
   mainWrapper.appendChild(leftLegend);
 
   return container;

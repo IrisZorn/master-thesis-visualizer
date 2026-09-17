@@ -49,7 +49,7 @@ def find_stable_start(points, max_dist, recovery_points, progress_window=30, min
     return fallback if fallback is not None else 0
 
 
-def filter_points(points, ghost_points, hit_points, max_dist=200, big_dist=700, recovery_points=8):
+def filter_points(points, ghost_points, hit_points, max_dist=200, big_dist=700, recovery_points=8, max_gap=80):
     if len(points) < 2:
         return points
 
@@ -62,20 +62,24 @@ def filter_points(points, ghost_points, hit_points, max_dist=200, big_dist=700, 
         curr = points[i]
 
         d = distance(prev, curr)
+        gap = curr[2] - prev[2]
 
         break_exists = any(prev[2] < p[2] < curr[2] for p in ghost_points) or any(prev[2] < p[2] < curr[2] for p in hit_points)
 
         if break_exists:
             filtered.append((None, None, curr[2] - 1))
 
-        # normal movement
-        if d <= max_dist:
+        # normal movement -- gated on gap, not just distance, so a detection that lands close to
+        # an old position purely by chance after a long silence (e.g. a misdetection while the
+        # real subject is dead/off-screen) still has to earn its way back in via the stricter
+        # recovery check below, rather than being trusted just for being nearby.
+        if d <= max_dist and gap <= max_gap:
             filtered.append(curr)
             i += 1
             continue
 
         # medium jump followed by normal movement
-        if d <= big_dist and i + 1 < len(points):
+        if d <= big_dist and gap <= max_gap and i + 1 < len(points):
             next_point = points[i + 1]
 
             if distance(curr, next_point) <= max_dist:

@@ -70,6 +70,7 @@ export function makeLegendGradientGlyph(colors, borderColor = "#666") {
 
 export function createSliderMarkers({
   sliderMarkers,
+  startTime,
   maxTime,
   showDeath,
   showHit,
@@ -81,8 +82,12 @@ export function createSliderMarkers({
   hitSprites,
 }) {
   function sliderPercent(time) {
-    if (!maxTime) return 0;
-    return clamp((time / maxTime) * 100, 0, 100);
+    // matches the native range input's own min/max mapping ((value - min) / (max - min)) --
+    // the input's min is startTime, not 0 (see visualize.js), so a marker's position has to
+    // account for that same offset or it lands to the right of where the thumb actually sits
+    // at that timestamp.
+    if (!maxTime || maxTime === startTime) return 0;
+    return clamp(((time - startTime) / (maxTime - startTime)) * 100, 0, 100);
   }
 
   function markerKey(label, time) {
@@ -178,6 +183,51 @@ export function createSliderMarkers({
       sliderMarkers.appendChild(glyph);
     }
   };
+}
+
+// draws one vertical tick per stage boundary (skipping stage 0, which is always the slider's own
+// start) directly onto the given absolutely-positioned layer. Static once drawn -- unlike death
+// /hit markers, boundaries don't depend on currentTime, so callers only need to run this once.
+export function drawStageBoundaryMarkers({ layer, startTime, maxTime, stageStarts, stageNames = [] }) {
+  function sliderPercent(time) {
+    if (!maxTime || maxTime === startTime) return 0;
+    return clamp(((time - startTime) / (maxTime - startTime)) * 100, 0, 100);
+  }
+
+  layer.replaceChildren();
+  for (let i = 1; i < stageStarts.length; i++) {
+    const t = stageStarts[i];
+    if (t == null) continue;
+    const line = document.createElement("div");
+    line.style.position = "absolute";
+    line.style.left = `${sliderPercent(t)}%`;
+    line.style.top = "0";
+    line.style.bottom = "0";
+    line.style.width = "2px";
+    line.style.background = "rgba(255,255,255,0.75)";
+    line.style.boxShadow = "0 0 2px rgba(0,0,0,0.6)";
+    line.title = stageNames[i] ? `${stageNames[i]} starts` : `Stage ${i + 1} starts`;
+    layer.appendChild(line);
+  }
+}
+
+// one button per stage the run actually reached (stage_start_times leaves a stage null when the
+// run ended before it began) -- clicking jumps the timeslider to that stage's start via onSelect.
+export function createStageButtons({ stageStarts, stageNames = [], onSelect }) {
+  const row = document.createElement("div");
+  row.style.display = "flex";
+  row.style.gap = "8px";
+
+  stageStarts.forEach((t, i) => {
+    if (t == null) return;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = stageNames[i] || `Stage ${i + 1}`;
+    button.addEventListener("click", () => onSelect(t));
+    row.appendChild(button);
+  });
+
+  return row;
 }
 
 export function createLegendRow({ label, color, getter, setter, glyphNode, onChange }) {

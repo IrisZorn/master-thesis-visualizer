@@ -1,7 +1,19 @@
+import argparse
 import json
 import pickle
+from pathlib import Path
 
+import constants_forest_follies
+import constants_wally_warbles
 from coords_transform import transform_run
+
+# Forest Follies and Wally Warbles' per-run coordinates. Framework calls this once per level
+# (e.g. requesting data/run_coords_wally_warbles.json runs it with --level=wally_warbles) -- the
+# loader itself is level-agnostic and only ever looks a level up by name here.
+LEVELS = {
+    "forest_follies": constants_forest_follies,
+    "wally_warbles": constants_wally_warbles,
+}
 
 # a recording counts as single-player once a non-primary player has fewer than 1/COOP_RATIO_THRESHOLD
 # as many detections as the primary one: at that point their "path" is stray false detections on
@@ -32,11 +44,20 @@ def merge_into_primary_player(runs, level):
         merged_run = dict(run)
 
         for stream in ("main", "ghost", "hit"):
-            points = list(merged_run.get(primary[stream], []))
+            # a level without e.g. a hit-reaction sprite (constants_wally_warbles.py) has no type
+            # number for that stream at all -- skip it rather than writing a bogus merged_run[None]
+            # entry, which json.dumps would silently turn into a "null" key in the output.
+            primary_type = primary.get(stream)
+            if primary_type is None:
+                continue
+            points = list(merged_run.get(primary_type, []))
             for other in others:
-                points += list(merged_run.get(other[stream], []))
-                merged_run[other[stream]] = []
-            merged_run[primary[stream]] = sorted(points, key=lambda point: point[2])
+                other_type = other.get(stream)
+                if other_type is None:
+                    continue
+                points += list(merged_run.get(other_type, []))
+                merged_run[other_type] = []
+            merged_run[primary_type] = sorted(points, key=lambda point: point[2])
 
         merged_runs.append(merged_run)
 
@@ -69,3 +90,11 @@ def dump_playthroughs(level, play_data_dir):
         for pkl_path in sorted(play_data_dir.glob("*.pkl"))
     }
     print(json.dumps(playthroughs))
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--level", required=True, choices=sorted(LEVELS))
+    level_name = parser.parse_args().level
+
+    dump_playthroughs(LEVELS[level_name], Path(__file__).parent / "resources/play_data" / level_name)

@@ -13,6 +13,8 @@ blueberry=100,120
 #TODO: look at clustering
 #TODO: shooting arrows
 
+#TODO: add level statistics? how many retries, how many enemies in level
+
 #TODO: go to other levels
 
 #TODO: setup server
