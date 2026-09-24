@@ -27,6 +27,7 @@ export function createLevelConfig(baseConfig, overrides = {}) {
     minimizingEnemyTypes: new Set(overrides.minimizingEnemyTypes || baseConfig.minimizingEnemyTypes),
     neverFadeEnemyTypes: new Set(overrides.neverFadeEnemyTypes || baseConfig.neverFadeEnemyTypes),
     holdLastPositionEnemyTypes: new Set(overrides.holdLastPositionEnemyTypes || baseConfig.holdLastPositionEnemyTypes),
+    countableEnemyTypes: new Set(overrides.countableEnemyTypes || baseConfig.countableEnemyTypes),
     enemyLegendSpriteKey: overrides.enemyLegendSpriteKey ?? baseConfig.enemyLegendSpriteKey,
   };
 }

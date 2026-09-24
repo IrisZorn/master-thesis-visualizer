@@ -61,10 +61,12 @@ PLAYER_BIG_DIST = 650
 # build_enemy_full_paths.py's MIN_TRACK_POINTS=20 because these enemies roam
 # freely and can legitimately pass through view in a handful of frames.
 MIN_ENEMY_TRACK_POINTS = 5
-# max time gap between a path's last known position and an existing ghost detection for that
-# ghost to count as already covering the end of the run -- reuses extract_singular_points'
-# default time_thresh, the same "same event" window already used to cluster ghost/hit detections.
-END_OF_RUN_GHOST_WINDOW = 200
+# minimum simultaneous gap (time units) with zero real-position detections from *either* player
+# before a run is considered over and everything from the gap onward is discarded -- a recording
+# that goes dark for both players this long is dead air (detector failure, or the footage just
+# ending), not two live players waiting to reappear. Matches extract_singular_points' default
+# time_thresh, the same "same event" window already used to cluster ghost/hit detections.
+BOTH_PLAYERS_UNDETECTED_GAP = 200
 # margin (px) by which the raw-labeled player's last known position must be farther from a
 # ghost cluster than the other player's, before that cluster's identity gets swapped away from
 # the detector's own class label (see resolve_ghost_swaps). Cuphead_ghost and mugman_ghost
@@ -76,21 +78,6 @@ END_OF_RUN_GHOST_WINDOW = 200
 # label is trusted rather than guessed. 200 is a starting point (~1.4x an enemy's own glyph
 # size) pending a look at real swapped-ghost cases.
 GHOST_SWAP_MARGIN = 200
-# min cleaned path length for the end-of-run marker below to fire. A real player's path spans
-# hundreds/thousands of points; a handful of false-positive detections on the *other* player in
-# solo footage (e.g. stray "mugman" noise in a Cuphead-only run) cleans down to a tiny path
-# instead, which would otherwise get a bogus synthetic ghost stapled onto wherever that noise
-# happened to land.
-MIN_PATH_POINTS_FOR_END_MARKER = 20
-# how close a path's last known x has to be to the level's MAP_WIDTH to count as having reached
-# the end of the level. The camera stops scrolling once it's clamped to the map's right edge (see
-# visualize.js's cameraX clamp), so a player who actually finished can still be recorded up to
-# about this far short of the true edge while still reading as "at the end" on screen. This
-# default assumes a level much wider than one screen (a fraction of the viewport is a small
-# sliver of the map); a level whose arena is roughly one screen wide (e.g. a static-camera boss
-# fight) should set its own MAP_END_MARGIN in its constants module -- see
-# constants_wally_warbles.py for why 0 is appropriate there.
-MAP_END_MARGIN = VIEWPORT_WIDTH * 2 / 3
 # same threshold build_enemy_full_paths.py's X_MATCH_THRESHOLD uses to tell separate instances
 # of these enemy types apart -- reused here to assign a raw detection to the known instance it
 # belongs to, along whichever axis is fixed for that enemy (x for fixed-vertical, y for
@@ -360,12 +347,12 @@ def resolve_ghost_swaps(run, players):
     return resolved
 
 
-def clean_player_path(run, player, resolved_ghosts, map_width, map_end_margin, allow_end_marker=True, has_next_run=True):
+def build_player_path(run, player):
     # player is one entry of a level's PLAYERS tuple: {"main", "ghost", "hit"} -> type numbers,
     # though "hit" may be absent for a level with no hit-reaction sprite (see
-    # constants_wally_warbles.py). Returns the same shape ({"main", "ghost", "hit"}, "hit" always
-    # present but empty when the level has none), so callers can keep working stream-by-stream
-    # without knowing which character it is.
+    # constants_wally_warbles.py). Cleans one player's raw main-path detections only -- ghost/hit
+    # points aren't folded in yet, since find_untracked_cutoff still needs every player's cleaned
+    # *real-position* path before anything gets truncated to a shared cutoff (see transform_run).
     main_type, ghost_type, hit_type = player["main"], player["ghost"], player.get("hit")
 
     # ghost_type is passed to filter_points raw (unsorted, un-deduped): it's only used there
@@ -375,38 +362,49 @@ def clean_player_path(run, player, resolved_ghosts, map_width, map_end_margin, a
     # a correctly-identified one.
     raw_ghosts = run[ghost_type]
     hits = extract_singular_points(run.get(hit_type) or [], min_cluster_size=8)
-    ghosts = resolved_ghosts
 
     path = sorted(run.get(main_type) or [], key=lambda point: point[2])
     path = clean_path_points(path, raw_ghosts, hits, big_dist=PLAYER_BIG_DIST)
+    return path, hits
 
-    # a run that just stops (recording cuts off) rather than ending in a captured death looks
-    # identical to a live player on the timeline. If the path's last known position isn't
-    # already near a real ghost detection, synthesize one there so the end of the run reads the
-    # same as an actual death. Skipped for a player who isn't really being tracked at all
-    # (allow_end_marker=False, e.g. Mugman in a solo run about to be merged into Cuphead) --
-    # their "path" is noise, so it has no real end to mark.
-    last_point = None
-    if allow_end_marker and len(path) >= MIN_PATH_POINTS_FOR_END_MARKER:
-        last_point = next((point for point in reversed(path) if point[0] is not None), None)
-    if last_point is not None and not any(abs(ghost[2] - last_point[2]) <= END_OF_RUN_GHOST_WINDOW for ghost in ghosts):
-        # a later run in the same playthrough means this one ended in a death (the player
-        # retried); with no later run, reaching the far edge of the map means they finished the
-        # level instead, which isn't a death and shouldn't get a marker.
-        reached_map_end = last_point[0] is not None and last_point[0] >= map_width - map_end_margin
-        if has_next_run or not reached_map_end:
-            ghosts = list(ghosts) + [last_point]
 
-    # fold the ghost/hit points back into the trail so revivals and hits show up as points
-    # along the path, then re-sort since they're appended out of chronological order
-    path = [(x, y, t) for x, y, t in path] + list(ghosts) + list(hits)
-    path.sort(key=lambda point: point[2])
+def find_untracked_cutoff(paths, gap_threshold):
+    # paths: one or more players' detection streams (main path, ghosts, hits -- anything that
+    # counts as "this player was detected somehow"). Pools every stream's real-position
+    # timestamps (None-marker break points excluded) together and returns the time of the last
+    # detection before the first stretch of gap_threshold or longer with no detection from any of
+    # them -- or None if the pooled detections never go dark that long, meaning nothing needs to
+    # be cut.
+    times = sorted(point[2] for path in paths for point in path if point[0] is not None)
+    for previous, current in zip(times, times[1:]):
+        if current - previous > gap_threshold:
+            return previous
+    return None
 
-    return {"main": path, "ghost": ghosts, "hit": hits}
+
+def finalize_player_path(path, ghosts, hits, cutoff):
+    # truncates every stream to the simultaneous-undetected cutoff (cutoff=None means the run
+    # never went dark, so nothing is cut), then folds ghost/hit points back into the main trail
+    # so revivals and hits show up as points along the path, and re-sorts since they're appended
+    # out of chronological order. Ghosts are used as-is (whatever resolve_ghost_swaps actually
+    # detected) -- a player whose track simply ends with no detected ghost reads as having
+    # finished the level rather than died, so no marker is added for them.
+    if cutoff is not None:
+        path = [point for point in path if point[2] <= cutoff]
+        ghosts = [point for point in ghosts if point[2] <= cutoff]
+        hits = [point for point in hits if point[2] <= cutoff]
+    else:
+        ghosts = list(ghosts)
+        hits = list(hits)
+
+    full_path = [(x, y, t) for x, y, t in path] + ghosts + hits
+    full_path.sort(key=lambda point: point[2])
+
+    return {"main": full_path, "ghost": ghosts, "hit": hits}
 
 
 def stable_start_time(player_paths):
-    # earliest of the players' own validated starts (see clean_player_path/find_stable_start):
+    # earliest of the players' own validated starts (see build_player_path/find_stable_start):
     # once any player's real position is being tracked, the recording is in real gameplay, so
     # detections of anything -- not just players -- before that point aren't trustworthy either.
     starts = [path[0][2] for path in player_paths if path]
@@ -483,26 +481,70 @@ def transform_run(run, level, is_coop=True, has_next_run=True):
     if not all(run.get(player["main"]) for player in level.PLAYERS):
         return None
 
-    # only the primary player (PLAYERS[0]) is always really being tracked. In single-player
-    # footage the others' detections are noise misread off the primary, so they get no
-    # end-of-run marker -- there's no real run of theirs to mark the end of.
-    map_end_margin = getattr(level, "MAP_END_MARGIN", MAP_END_MARGIN)
     resolved_ghosts = resolve_ghost_swaps(run, level.PLAYERS)
-    cleaned_players = [
-        clean_player_path(
-            run, player, resolved_ghosts[player["ghost"]], level.MAP_WIDTH, map_end_margin,
-            allow_end_marker=is_coop or index == 0,
-            has_next_run=has_next_run,
-        )
-        for index, player in enumerate(level.PLAYERS)
+    built_players = [build_player_path(run, player) for player in level.PLAYERS]
+
+    # only the primary player (PLAYERS[0]) is always really being tracked. In single-player
+    # footage the others' detections are noise misread off the primary, so they're excluded here
+    # -- their "path" going dark isn't a real player going undetected. A ghost/hit sighting counts
+    # as a detection here too, not just a live position -- the ghost sprite takes a few frames to
+    # register after a death, so a gap measured on live positions alone would (and did) cross the
+    # threshold and cut the run just before that real ghost detection arrived.
+    tracked_streams = [
+        path + list(resolved_ghosts[player["ghost"]]) + list(hits)
+        for index, (player, (path, hits)) in enumerate(zip(level.PLAYERS, built_players))
+        if is_coop or index == 0
     ]
+    cutoff = find_untracked_cutoff(tracked_streams, BOTH_PLAYERS_UNDETECTED_GAP)
+
+    cleaned_players = [
+        finalize_player_path(path, resolved_ghosts[player["ghost"]], hits, cutoff)
+        for player, (path, hits) in zip(level.PLAYERS, built_players)
+    ]
+
+    # a player who goes undetected for an extended stretch before the run's own end almost always
+    # died without the detector ever catching it (off-screen, or the death sprite itself went
+    # unrecognized) -- so if nothing else already marks their last known position as a death, add
+    # one there. Only considered for players who are really being tracked (see is_coop above);
+    # skipped when a real ghost already covers their last point. An extended gap isn't the only
+    # tell, though: if both players stay detected together right up to a shared simultaneous-
+    # silence cutoff (see find_untracked_cutoff above), neither one's own gap looks "extended"
+    # relative to the other -- but has_next_run (a later attempt exists in this same recording)
+    # independently proves this run still ended in death for whoever isn't already confirmed, so
+    # that's checked too rather than relying on gap size alone.
+    def last_real_point(cleaned):
+        return next((point for point in reversed(cleaned["main"]) if point[0] is not None), None)
+
+    tracked_indices = [index for index in range(len(level.PLAYERS)) if is_coop or index == 0]
+    run_end_times = [
+        point[2] for point in (last_real_point(cleaned_players[index]) for index in tracked_indices)
+        if point is not None
+    ]
+    run_end = max(run_end_times) if run_end_times else None
+
+    if run_end is not None:
+        for index in tracked_indices:
+            cleaned = cleaned_players[index]
+            last_point = last_real_point(cleaned)
+            if last_point is None:
+                continue
+            has_nearby_ghost = any(
+                abs(g[2] - last_point[2]) <= BOTH_PLAYERS_UNDETECTED_GAP for g in cleaned["ghost"]
+            )
+            extended_absence = run_end - last_point[2] >= BOTH_PLAYERS_UNDETECTED_GAP
+            if not has_nearby_ghost and (extended_absence or has_next_run):
+                cleaned["ghost"] = list(cleaned["ghost"]) + [last_point]
+
     player_paths = [cleaned["main"] for cleaned in cleaned_players]
     start_time = stable_start_time(player_paths)
+
+    def in_window(t):
+        return t >= start_time and (cutoff is None or t <= cutoff)
 
     # players and their ghost/hit streams are cleaned above; enemy tracks are rebuilt
     # from raw run data below, so neither needs the generic sort-and-passthrough treatment here
     my_dict = {
-        char: [(x, y, t) for x, y, t in sorted(values, key=lambda point: point[2]) if t >= start_time]
+        char: [(x, y, t) for x, y, t in sorted(values, key=lambda point: point[2]) if in_window(t)]
         for char, values in run.items()
         if char not in level.PLAYER_KEYS | level.ENEMY_KEYS
     }
@@ -521,7 +563,7 @@ def transform_run(run, level, is_coop=True, has_next_run=True):
     # would shuffle the output's key order from one run of the pipeline to the next
     known_instances = load_known_enemy_instances(level)
     for enemy_type in sorted(level.ENEMY_KEYS):
-        enemy_values = [point for point in (run.get(enemy_type) or []) if point[2] >= start_time]
+        enemy_values = [point for point in (run.get(enemy_type) or []) if in_window(point[2])]
         if enemy_type in level.FIXED_VERTICAL_ENEMIES:
             my_dict[enemy_type] = build_fixed_axis_paths(enemy_values, known_instances.get(enemy_type, []), fixed_axis="x")
         elif enemy_type in level.FIXED_HORIZONTAL_ENEMIES:

@@ -47,7 +47,7 @@ export function makeLegendGlyph(spriteUrl, backgroundColor, borderColor = "white
   img.src = spriteUrl;
   img.style.width = "100%";
   img.style.height = "100%";
-  img.style.objectFit = "cover";
+  img.style.objectFit = "contain";
   img.style.display = "block";
 
   inner.appendChild(img);

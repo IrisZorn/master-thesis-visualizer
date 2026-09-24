@@ -27,7 +27,35 @@ export function createEnemyVisualBuilder({
   showEnemy,
   stageStarts = [],
   enemyStageIndex = {},
+  mapWidth = null,
 }) {
+  // how close to the map's own left/right boundary (not the camera's, which can be narrower --
+  // see cameraLeftEdgeAtTime in visualize.js for that separate check) an enemy has to be, while
+  // still moving into it, to count as flying off the level rather than dying -- matches
+  // coords_transform.py's own VIEWPORT_EDGE_MARGIN for what counts as "near an edge". mapWidth is
+  // only known once visualize.js has loaded the map image, so this stays a no-op (never an edge
+  // exit) if it isn't provided.
+  const MAP_EDGE_MARGIN = 150;
+  function isLeavingMapEdge(x, dx) {
+    if (mapWidth == null || x == null) return false;
+    if (x <= MAP_EDGE_MARGIN && dx <= 0) return true;
+    if (x >= mapWidth - MAP_EDGE_MARGIN && dx >= 0) return true;
+    return false;
+  }
+
+  // net x-displacement over the trailing few points, rather than just the immediately preceding
+  // one -- a single frame of detector jitter right at a track's last point (common right at a
+  // screen edge, where the bounding box is already partial) can otherwise flip dx's sign and make
+  // an enemy that was clearly flying off the edge the whole time look like it turned back at the
+  // very last instant, defeating isLeavingMapEdge for exactly the cases it exists to catch.
+  const EDGE_DIRECTION_LOOKBACK = 5;
+  function netDirection(points) {
+    if (!points || points.length < 2) return 0;
+    const last = points[points.length - 1];
+    const ref = points[Math.max(0, points.length - 1 - EDGE_DIRECTION_LOOKBACK)];
+    if (!ref || last[0] == null || ref[0] == null) return 0;
+    return last[0] - ref[0];
+  }
   // highest stage index whose start has passed, or null on a level with no stages (stageStarts
   // empty) -- stage 0's start is always defined (the run's own stable start), so this is only
   // null before any stage data exists at all.
@@ -45,10 +73,14 @@ export function createEnemyVisualBuilder({
   // shared by full-path-instances and stationary matching: an instance is "active" only while
   // we're still within its matched live track's last known detection -- no fade-out grace
   // period, so it greys out the instant tracking stops, not windowDelta later.
-  function getLastDetectionTime(liveTrack, minClusterSize) {
+  function getLastDetectionPoint(liveTrack, minClusterSize) {
     const liveTrackPoints = liveTrack ? validTimedPoints(liveTrack) : [];
     if (liveTrackPoints.length < minClusterSize) return null;
-    const lastDetection = liveTrackPoints[liveTrackPoints.length - 1];
+    return liveTrackPoints[liveTrackPoints.length - 1];
+  }
+
+  function getLastDetectionTime(liveTrack, minClusterSize) {
+    const lastDetection = getLastDetectionPoint(liveTrack, minClusterSize);
     return lastDetection ? lastDetection[2] : null;
   }
 
@@ -318,6 +350,13 @@ export function createEnemyVisualBuilder({
         // forever, indistinguishable from a still-detected enemy.
         const lastDetection = getLastDetectionTime(track.points, 2);
         const trackIsActive = isInstanceActive(track.points, 2);
+        if (!trackIsActive) {
+          const last = getLastDetectionWithDirection(track.points, 2);
+          // flew off the edge of the map alive -- skip the grey fade entirely (not a
+          // disappearance to show at all) instead of drawing it like a possible death. See
+          // computeEnemyDisappearances, which excludes the same event from Enemies Hit.
+          if (last && isLeavingMapEdge(last.point[0], last.dx)) continue;
+        }
         const visibility = instanceVisibility(lastDetection);
         const trackColor = trackIsActive ? "rgba(64, 224, 208, 0.9)" : `rgba(148, 163, 184, ${(0.9 * visibility).toFixed(2)})`;
         visuals.paths.push(...buildFadedTrailSegments(points, `enemy-free-${track.id}`, trackColor, 8));
@@ -330,6 +369,11 @@ export function createEnemyVisualBuilder({
       const state = chainStateAtTime(chain, currentTimeProvider());
       if (!state) continue;
 
+      if (!state.active) {
+        const heldEnd = state.points[state.points.length - 1];
+        if (isLeavingMapEdge(heldEnd[0], netDirection(state.points))) continue;
+      }
+
       const visibility = instanceVisibility(state.lastDetection);
       const chainColor = state.active ? "rgba(64, 224, 208, 0.9)" : `rgba(148, 163, 184, ${(0.9 * visibility).toFixed(2)})`;
       visuals.paths.push(...buildFadedTrailSegments(state.points, `enemy-free-${chain.id}`, chainColor, 8));
@@ -340,5 +384,77 @@ export function createEnemyVisualBuilder({
     return visuals;
   }
 
-  return { buildEnemyVisuals, filterRecentPoints };
+  // last detection point of a track alongside its recent x-direction (see netDirection) -- dx lets
+  // a caller tell "stopped/destroyed here" apart from "was still moving toward this point when
+  // tracking ended" (e.g. flying off the edge of the screen).
+  function getLastDetectionWithDirection(liveTrack, minClusterSize) {
+    const points = liveTrack ? validTimedPoints(liveTrack) : [];
+    if (points.length < minClusterSize) return null;
+    return { point: points[points.length - 1], dx: netDirection(points) };
+  }
+
+  // One-time (not per-frame) list of every enemy instance/track/chain-segment's own "went
+  // undetected" event -- used by visualize.js to build the Enemies Hit stat. A disappearance that
+  // isLeavingMapEdge (still moving into the map's own boundary) is skipped entirely here, not just
+  // filtered out downstream: it's not a hit, it's the enemy flying off the level alive, and
+  // buildEnemyVisuals below applies the exact same isLeavingMapEdge check to skip the grey fade for
+  // it on screen too, so the two stay in agreement. Reports every remaining disappearance across
+  // the whole run, not just ones already reached by currentTime, so the caller can filter by its
+  // own running scrub position. Also excludes neverFadeEnemyTypes (e.g. toothy), which never grey
+  // out in the first place.
+  function computeEnemyDisappearances() {
+    const events = [];
+
+    for (const [enemyType, aggregate] of Object.entries(enemyAggregates)) {
+      if (!aggregate || neverFadeEnemyTypes.has(enemyType)) continue;
+      const liveTracks = enemyPathsByType[enemyType] || [];
+
+      if (aggregate.mode === "full-path-instances" && Array.isArray(aggregate.instances)) {
+        const isFixedHorizontal = fixedHorizontalEnemyTypes.has(enemyType);
+        const fixedIndex = isFixedHorizontal ? 1 : 0;
+        const liveTrackByInstance = matchLiveTracksToInstances(liveTracks, aggregate.instances, fixedIndex);
+        for (const [index] of aggregate.instances.entries()) {
+          const liveTrack = liveTrackByInstance.get(index) || null;
+          const last = getLastDetectionWithDirection(liveTrack, 2);
+          if (last && !isLeavingMapEdge(last.point[0], last.dx)) events.push({ timestamp: last.point[2], x: last.point[0], type: enemyType });
+        }
+        continue;
+      }
+
+      if (aggregate.mode === "stationary") {
+        for (const anchor of aggregate.anchors || []) {
+          const anchorX = anchor[0];
+          const anchorY = anchor[1];
+          const liveTrack = liveTracks.find((track) => {
+            const validPoints = (track || []).filter((point) => point && Number.isFinite(point[0]) && Number.isFinite(point[1]));
+            if (!validPoints.length) return false;
+            const meanX = d3.mean(validPoints, (point) => point[0]);
+            const meanY = d3.mean(validPoints, (point) => point[1]);
+            return Math.hypot(meanX - anchorX, meanY - anchorY) <= stationaryInstanceThreshold;
+          });
+          const last = getLastDetectionWithDirection(liveTrack, 3);
+          if (last && !isLeavingMapEdge(last.point[0], last.dx)) events.push({ timestamp: last.point[2], x: last.point[0], type: enemyType });
+        }
+      }
+    }
+
+    for (const track of enemyPaths) {
+      if (neverFadeEnemyTypes.has(track.type)) continue;
+      if (stationaryEnemyTypes.has(track.type) || centeredGlyphEnemyTypes.has(track.type) || minimizingEnemyTypes.has(track.type)) continue;
+      const last = getLastDetectionWithDirection(track.points, 2);
+      if (last && !isLeavingMapEdge(last.point[0], last.dx)) events.push({ timestamp: last.point[2], x: last.point[0], type: track.type });
+    }
+
+    for (const chain of minimizingChains) {
+      if (neverFadeEnemyTypes.has(chain.type)) continue;
+      for (const segment of chain.segments) {
+        const lastPoint = segment[segment.length - 1];
+        if (lastPoint && !isLeavingMapEdge(lastPoint[0], netDirection(segment))) events.push({ timestamp: lastPoint[2], x: lastPoint[0], type: chain.type });
+      }
+    }
+
+    return events;
+  }
+
+  return { buildEnemyVisuals, filterRecentPoints, computeEnemyDisappearances };
 }

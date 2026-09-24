@@ -4,10 +4,8 @@
 LEVEL = 'wally_warbles'
 
 # this level's arena is one static 1920x1080 screen (no side-scrolling), so MAP_WIDTH is just the
-# screen width, and MAP_END_MARGIN is 0 -- there's no "reached the far edge, must have finished"
-# case like Forest Follies' side-scroll (see coords_transform.py's MAP_END_MARGIN default).
+# screen width.
 MAP_WIDTH = 1920
-MAP_END_MARGIN = 0
 
 #constants
 apple = '0'

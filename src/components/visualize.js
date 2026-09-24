@@ -9,6 +9,7 @@ export async function createMapViewer({
   data: providedData,
   curr_playthrough = null,
   aggr_players = null,
+  totalRuns = null,
   mapUrl,
   spriteUrls = {},
   enemySizesText = "",
@@ -382,7 +383,7 @@ export async function createMapViewer({
   }
 
   const enemyPaths = flattenEnemyPaths(enemyPathsByType);
-  const { buildEnemyVisuals, filterRecentPoints } = createEnemyVisualBuilder({
+  const { buildEnemyVisuals, filterRecentPoints, computeEnemyDisappearances } = createEnemyVisualBuilder({
     currentTimeProvider: () => currentTime,
     windowDelta: WINDOW_DELTA,
     enemyAggregates,
@@ -400,7 +401,144 @@ export async function createMapViewer({
     showEnemy: () => showEnemyToggle.value,
     stageStarts,
     enemyStageIndex: levelConfig.enemyStageIndex || {},
+    mapWidth: mapW,
   });
+
+  // Enemies Hit stat: a raw disappearance (see computeEnemyDisappearances) only counts as a hit
+  // if the enemy's last known x position was still within (or ahead of) the camera's viewport at
+  // that moment -- otherwise it's just the camera scrolling past a still-alive enemy, which looks
+  // identical to a hit from the detection data alone. cameraLeftEdgeAtTime mirrors render()'s own
+  // follow-camera math (see cameraX below) but evaluated at the disappearance's own timestamp
+  // instead of currentTime, using each player's last live position at-or-before that time. On a
+  // level with a static camera (e.g. Wally Warbles, viewportW === mapW) this always clamps to 0,
+  // so every disappearance passes -- exactly the no-op that's expected there.
+  function lastLiveX(path, nonLiveTimes, t) {
+    let x = null;
+    for (const point of path) {
+      if (!point || point[2] == null) continue;
+      if (point[2] > t) break;
+      if (nonLiveTimes.has(point[2])) continue;
+      if (isFiniteCoord(point[0])) x = point[0];
+    }
+    return x;
+  }
+  function followXAtTime(t) {
+    const cupX = lastLiveX(cup, cupNonLiveTimes, t);
+    const mugX = lastLiveX(mug, mugNonLiveTimes, t);
+    if (cupX != null && mugX != null) return (cupX + mugX) / 2;
+    if (cupX != null) return cupX;
+    if (mugX != null) return mugX;
+    return null;
+  }
+  function cameraLeftEdgeAtTime(t) {
+    const followX = followXAtTime(t);
+    if (followX == null) return null;
+    return clamp(followX - viewportW / 2, 0, mapW - viewportW);
+  }
+  // computeEnemyDisappearances (viewer-enemies.js) already excludes an enemy that was still
+  // moving into the map's own left/right boundary when tracking ended -- that's flying off the
+  // level alive (e.g. Wally Warbles' nailbird routinely exits off the static screen's edge), not a
+  // hit, and buildEnemyVisuals skips its grey fade on screen for the same reason. What's left here
+  // only needs the camera-scroll check below.
+  const enemyHitEvents = computeEnemyDisappearances()
+    .filter((event) => levelConfig.countableEnemyTypes.has(event.type))
+    .filter((event) => {
+      const leftEdge = cameraLeftEdgeAtTime(event.timestamp);
+      if (leftEdge == null) return true;
+      return event.x >= leftEdge;
+    })
+    .map((event) => event.timestamp);
+
+  /* ---------------- STATS PANEL (right of the map) ---------------- */
+  // Built once here (not in the CONTAINER section below) so it already exists by the time the
+  // first render() call runs -- render() updates these rows' values directly rather than
+  // recreating them every frame.
+  const statsPanel = document.createElement('div');
+  statsPanel.style.position = 'absolute';
+  statsPanel.style.top = '10px';
+  statsPanel.style.right = '10px';
+  statsPanel.style.background = 'white';
+  statsPanel.style.border = '1px solid #ccc';
+  statsPanel.style.borderRadius = '4px';
+  statsPanel.style.boxShadow = '0 2px 8px rgba(0,0,0,0.12)';
+  statsPanel.style.padding = '6px 8px';
+  statsPanel.style.fontFamily = 'sans-serif';
+  statsPanel.style.fontSize = '13px';
+  statsPanel.style.display = 'flex';
+  statsPanel.style.flexDirection = 'column';
+  statsPanel.style.gap = '6px';
+  statsPanel.style.width = '180px';
+  statsPanel.style.boxSizing = 'border-box';
+  statsPanel.style.zIndex = '1000';
+
+  // header row toggles the body's visibility, same collapse pattern as the map legend
+  // (legendHeader/legendBody below)
+  const statsHeader = document.createElement('div');
+  statsHeader.style.display = 'flex';
+  statsHeader.style.alignItems = 'center';
+  statsHeader.style.justifyContent = 'space-between';
+  statsHeader.style.gap = '12px';
+  statsHeader.style.cursor = 'pointer';
+  statsHeader.style.userSelect = 'none';
+  statsHeader.style.fontWeight = 'bold';
+
+  const statsTitle = document.createElement('div');
+  statsTitle.textContent = 'Run Statistics';
+
+  const statsArrow = document.createElement('div');
+  statsArrow.textContent = '▾'; // ▾, flips to ▸ when collapsed
+  statsArrow.style.fontSize = '12px';
+
+  statsHeader.append(statsTitle, statsArrow);
+
+  const statsBody = document.createElement('div');
+  statsBody.style.display = 'flex';
+  statsBody.style.flexDirection = 'column';
+  statsBody.style.gap = '6px';
+
+  let statsCollapsed = false;
+  statsHeader.addEventListener('click', () => {
+    statsCollapsed = !statsCollapsed;
+    statsBody.style.display = statsCollapsed ? 'none' : 'flex';
+    statsArrow.textContent = statsCollapsed ? '▸' : '▾';
+  });
+
+  statsPanel.append(statsHeader, statsBody);
+
+  function createStatRow(label) {
+    const row = document.createElement('div');
+    row.style.display = 'flex';
+    row.style.justifyContent = 'space-between';
+    row.style.gap = '10px';
+    const labelEl = document.createElement('span');
+    labelEl.textContent = label;
+    const valueEl = document.createElement('span');
+    valueEl.style.fontWeight = 'bold';
+    row.append(labelEl, valueEl);
+    statsBody.appendChild(row);
+    return { row, valueEl };
+  }
+
+  const retriesStat = createStatRow('Retries');
+  if (totalRuns != null) {
+    retriesStat.valueEl.textContent = String(totalRuns - 1);
+  } else {
+    retriesStat.row.style.display = 'none';
+  }
+
+  // a single-player recording has the other player's streams merged away to empty arrays (see
+  // coords_transform.py's merge_into_primary_player) -- no point showing a player's rows at all
+  // when they were never in the run, rather than showing them stuck at 0.
+  const hasCup = cup.length > 0;
+  const hasMug = mug.length > 0;
+
+  // no hit-reaction detection stream on a level like Wally Warbles (see hasHitTracking above) --
+  // there's nothing to count, so these two rows aren't created at all rather than showing 0s.
+  const cupHitsStat = (hasHitTracking && hasCup) ? createStatRow('Cuphead Hits') : null;
+  const mugHitsStat = (hasHitTracking && hasMug) ? createStatRow('Mugman Hits') : null;
+  const cupDeathsStat = hasCup ? createStatRow('Cuphead Deaths') : null;
+  const mugDeathsStat = hasMug ? createStatRow('Mugman Deaths') : null;
+  const enemyHitsStat = createStatRow('Enemies Hit');
 
   // fade a segment out the further currentTime has moved past it -- never fade one in ahead of
   // time, so nothing previews before the scrub position actually reaches it.
@@ -859,11 +997,15 @@ export async function createMapViewer({
     // the glyph should only appear where a player is currently detected, so it disappears for
     // the whole of any gap (temporary death/ghost or the final one) and reappears on its own
     // once real detection resumes (e.g. a revival), instead of staying frozen at their last
-    // known spot for the duration of the gap.
-    const displayCupX = cupX;
-    const displayCupY = cupY;
-    const displayMugX = mugX;
-    const displayMugY = mugY;
+    // known spot for the duration of the gap. cupIsLive/mugIsLive alone only catches a held
+    // sample that's itself a flagged death/hit point -- it says nothing about a track that simply
+    // ends on an ordinary live point (an undetected death, or track loss near a run's end), so
+    // this also bounds display to each player's own last known timestamp, same as cupHasFollow/
+    // mugHasFollow above.
+    const displayCupX = currentTime <= cupMaxTime ? cupX : null;
+    const displayCupY = currentTime <= cupMaxTime ? cupY : null;
+    const displayMugX = currentTime <= mugMaxTime ? mugX : null;
+    const displayMugY = currentTime <= mugMaxTime ? mugY : null;
 
     const players = [];
     if (showCupToggle.value && isFiniteCoord(displayCupX) && isFiniteCoord(displayCupY)) players.push({id:'cup', x:displayCupX, y:displayCupY, sprite: playerSprites.cup, w: playerGlyphSize.cup.w, h: playerGlyphSize.cup.h});
@@ -1097,6 +1239,15 @@ export async function createMapViewer({
         exit => exit.remove()
       );
     }
+
+    // stats panel: running counts up to currentTime, so they build up as the timeline is scrubbed.
+    // A row is null (and never rendered) for a player who isn't in this run at all -- see hasCup/
+    // hasMug above -- so every update here is guarded rather than assuming both rows exist.
+    if (cupHitsStat) cupHitsStat.valueEl.textContent = String(cupHit.filter(p => p[2] <= currentTime).length);
+    if (mugHitsStat) mugHitsStat.valueEl.textContent = String(mugHit.filter(p => p[2] <= currentTime).length);
+    if (cupDeathsStat) cupDeathsStat.valueEl.textContent = String(cupDeath.filter(p => p[2] <= currentTime).length);
+    if (mugDeathsStat) mugDeathsStat.valueEl.textContent = String(mugDeath.filter(p => p[2] <= currentTime).length);
+    enemyHitsStat.valueEl.textContent = String(enemyHitEvents.filter(t => t <= currentTime).length);
   }
 
   /* ---------------- SLIDER EVENTS ---------------- */
@@ -1127,6 +1278,7 @@ export async function createMapViewer({
   // replace mainSvg in container with wrapper containing mainSvg
   container.replaceChild(mainWrapper, mainSvg);
   mainWrapper.appendChild(mainSvg);
+  mainWrapper.appendChild(statsPanel);
 
   // build a compact left-top legend owned by the viewer
   const leftLegend = document.createElement('div');
@@ -1139,6 +1291,7 @@ export async function createMapViewer({
   leftLegend.style.borderRadius = '4px';
   leftLegend.style.boxShadow = '0 2px 8px rgba(0,0,0,0.12)';
   leftLegend.style.fontFamily = 'sans-serif';
+  leftLegend.style.fontSize = '13px';
   leftLegend.style.zIndex = '1000';
   leftLegend.style.display = 'flex';
   leftLegend.style.flexDirection = 'column';

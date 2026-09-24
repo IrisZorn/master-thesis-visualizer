@@ -61,18 +61,21 @@ export const WALLY_WARBLES_LEVEL_CONFIG = {
   // ENEMIES + JUNK from constants_wally_warbles.py; bullets/start marker excluded like
   // Forest Follies excludes its own bullets/start marker
   trackedEnemyTypes: ["17", "20", "8", "11", "0", "3", "4", "5", "6", "12", "13", "15", "19", "22"],
+  // matches constants_wally_warbles.py's ENEMIES -- the subset of trackedEnemyTypes that's
+  // actually an enemy rather than a JUNK pickup, so the Enemies Hit stat (visualize.js) doesn't
+  // count an apple/egg/heart/etc. disappearing as if it were a hit.
+  countableEnemyTypes: ["17", "20", "8", "11"],
   enemyInstanceXThreshold: 170,
   stationaryInstanceThreshold: 200,
   startHp: 3,
-  // this level's arena is one static 1920x1080 screen (see constants_wally_warbles.py /
-  // coords_transform.py's MAP_END_MARGIN note), so the viewport is set to the full map width --
-  // the camera never needs to pan.
+  // this level's arena is one static 1920x1080 screen (see constants_wally_warbles.py's
+  // MAP_WIDTH), so the viewport is set to the full map width -- the camera never needs to pan.
   viewportWidth: 1920,
   minimapScale: 0.2,
   windowDelta: 50,
   defaultGlyphSize: { w: 68, h: 68 },
   enemySpritesFallbackKey: "junk",
-  enemyLegendSpriteKey: "wally",
+  enemyLegendSpriteKey: "willy",
   // matches constants_wally_warbles.py's STAGES order -- a run's data[0].stage_starts is
   // positional against this same list. Forest Follies has no stages, so its level config simply
   // has no stageNames, and visualize.js treats that as "nothing to mark".

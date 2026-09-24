@@ -58,6 +58,7 @@ const selectedRun = Generators.input(runSelect);
 const runIndex = Number(selectedRun.replace('Run ', '')) - 1;
 const currentViewer = await createMapViewer({
 	curr_playthrough: [playthroughsByFile[selectedPlaythrough][runIndex]],
+	totalRuns: playthroughsByFile[selectedPlaythrough].length,
 	mapUrl,
 	spriteUrls,
 	enemySizesText,

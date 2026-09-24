@@ -57,6 +57,10 @@ export const FOREST_FOLLIES_LEVEL_CONFIG = {
   // point-arrays, one per enemy instance) rather than an aggregate/cache;
   // matches coords_transform.py's ENEMY_KEYS
   trackedEnemyTypes: ["0", "14", "16", "2", "7", "11", "17", "1"],
+  // no JUNK/pickup distinction in constants_forest_follies.py -- every tracked type here is
+  // already a real enemy, so this just matches trackedEnemyTypes (see Wally Warbles' own
+  // countableEnemyTypes for a level where these two differ).
+  countableEnemyTypes: ["0", "14", "16", "2", "7", "11", "17", "1"],
   enemyInstanceXThreshold: 170,
   // matches build_enemy_full_paths.py's STATIONARY_DISTANCE_THRESHOLD: the distance within
   // which a live shroom/tulip track is considered the same physical instance as an anchor
