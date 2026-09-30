@@ -187,6 +187,8 @@ def aggregate_enemy_density(all_runs, level, cell_size=ENEMY_DENSITY_CELL_SIZE):
     enemy_types = set(level.ENEMY_KEYS)
     if not ENEMY_DENSITY_INCLUDES_STATIONARY:
         enemy_types -= level.STATIONARY_ENEMIES
+    # bullets tracked as enemy paths (e.g. Forest Follies' tulip_bullet) aren't enemies to the heatmap
+    enemy_types -= getattr(level, "HEATMAP_EXCLUDED_ENEMIES", set())
 
     sprite_sizes = load_enemy_sprite_sizes(level)
 
@@ -239,17 +241,18 @@ def slice_run_to_window(run, level, t_min, t_max):
     # restricts one transform_run result to a half-open time window [t_min, t_max) -- t_max=None
     # means "through the end of the run". Used to split a run into its stages before aggregating,
     # by re-slicing the same per-type data transform_run already built rather than re-detecting
-    # anything. Enemy types hold a list of tracks (each a list of points); every other key
-    # (players, ghosts/hits, bullets/effects) holds a flat point list -- both are pruned the same
-    # way, just at a different nesting level.
+    # anything. Enemy and bullet types hold a list of tracks (each a list of points); every other
+    # key (players, ghosts/hits, effects) holds a flat point list -- both are pruned the same way,
+    # just at a different nesting level.
     def keep(t):
         return t is not None and t >= t_min and (t_max is None or t < t_max)
 
+    track_keys = level.ENEMY_KEYS | getattr(level, "BULLET_KEYS", set())
     sliced = {}
     for key, value in run.items():
         if key == "stage_starts":
             continue
-        if key in level.ENEMY_KEYS:
+        if key in track_keys:
             sliced[key] = [[point for point in track if keep(point[2])] for track in value]
         else:
             sliced[key] = [point for point in value if keep(point[2])]

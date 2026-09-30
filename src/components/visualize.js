@@ -2,6 +2,7 @@ import * as d3 from "d3";
 import { parseEnemySizes } from "./level-config.js";
 import { Toggle, createLegendRow, createSliderMarkers, createStageButtons, drawStageBoundaryMarkers, makeLegendGlyph, makeLegendGradientGlyph } from "./viewer-controls.js";
 import { createEnemyVisualBuilder, getEnemyGlyphSize, getEnemyGlyphSource } from "./viewer-enemies.js";
+import { buildBulletArrows, enemyBulletPresenceByAnchor } from "./viewer-bullets.js";
 import { BAND_BLUR_RADIUS, HEATMAP_COLORS, createEnemyHeatmapBuilder } from "./viewer-heatmap.js";
 import { clamp, findCurrentIndex, flattenEnemyPaths, makePathD, validTimedPoints } from "./viewer-helpers.js";
 
@@ -67,6 +68,17 @@ export async function createMapViewer({
   mainImage.setAttribute("height", mapH);
   mainImage.setAttribute('preserveAspectRatio', 'xMidYMid meet');
   mainSvg.appendChild(mainImage);
+
+  // bleaches the background toward white so paths/heatmap drawn on top read more clearly
+  const mainImageWash = document.createElementNS(NS, "rect");
+  mainImageWash.setAttribute("x", 0);
+  mainImageWash.setAttribute("y", 0);
+  mainImageWash.setAttribute("width", mapW);
+  mainImageWash.setAttribute("height", mapH);
+  mainImageWash.setAttribute("fill", "white");
+  mainImageWash.setAttribute("fill-opacity", "0.3");
+  mainImageWash.style.pointerEvents = "none";
+  mainSvg.appendChild(mainImageWash);
 
   // aggregated enemy density field: sits directly above the background image and below the halo
   // and main layers, so switching it on never obscures the run being scrubbed
@@ -177,6 +189,17 @@ export async function createMapViewer({
     miniImage.setAttribute('preserveAspectRatio', 'xMidYMid meet');
     miniSvg.appendChild(miniImage);
 
+    // bleaches the background toward white so paths/heatmap drawn on top read more clearly
+    const miniImageWash = document.createElementNS(NS, "rect");
+    miniImageWash.setAttribute("x", 0);
+    miniImageWash.setAttribute("y", 0);
+    miniImageWash.setAttribute("width", miniW);
+    miniImageWash.setAttribute("height", miniH);
+    miniImageWash.setAttribute("fill", "white");
+    miniImageWash.setAttribute("fill-opacity", "0.3");
+    miniImageWash.style.pointerEvents = "none";
+    miniSvg.appendChild(miniImageWash);
+
     miniHeatmapLayer = document.createElementNS(NS, "g");
     miniHeatmapLayer.setAttribute("class", "mini-heatmap-layer");
     miniHeatmapLayer.setAttribute("filter", "url(#heat-blur)");
@@ -203,6 +226,21 @@ export async function createMapViewer({
   const enemyPathsByType = Object.fromEntries(
     levelConfig.trackedEnemyTypes.map((type) => [type, data[0][type] || []])
   );
+  // bullet-direction-arrow feature (see viewer-bullets.js): per-shot tracks for each configured
+  // bullet type, plus each "enemy" bullet's owner anchors (only stationary enemies have anchors
+  // in aggr_players.enemies) -- empty on a level with no bulletConfig.
+  const bulletConfig = levelConfig.bulletConfig || {};
+  const bulletPathsByType = Object.fromEntries(
+    Object.keys(bulletConfig).map((type) => [type, data[0][type] || []])
+  );
+  const enemyAnchorsByType = {};
+  for (const config of Object.values(bulletConfig)) {
+    if (config.owner === "enemy" && !enemyAnchorsByType[config.enemyType]) {
+      enemyAnchorsByType[config.enemyType] = aggr_players?.enemies?.[config.enemyType]?.anchors || [];
+    }
+  }
+  // lets a dead shroom's fade wait until its own bullet's arrow is gone (see viewer-enemies.js)
+  const bulletPresenceByAnchor = enemyBulletPresenceByAnchor({ bulletPathsByType, bulletConfig, enemyAnchorsByType });
   // level-wide fallback, used before any stage data exists or on a level with no stages at all
   // (aggr_players.stages absent) -- render() below picks the active stage's own aggregate instead
   // when one is available, so the pooled path/heatmap actually change as playback crosses a stage
@@ -402,6 +440,7 @@ export async function createMapViewer({
     stageStarts,
     enemyStageIndex: levelConfig.enemyStageIndex || {},
     mapWidth: mapW,
+    bulletPresenceByAnchor,
   });
 
   // Enemies Hit stat: a raw disappearance (see computeEnemyDisappearances) only counts as a hit
@@ -611,6 +650,15 @@ export async function createMapViewer({
     const mugIsLive = !mugNonLiveTimes.has(mugSample[2]);
     const cupX = cupIsLive ? cupSample[0] : null, cupY = cupIsLive ? cupSample[1] : null;
     const mugX = mugIsLive ? mugSample[0] : null, mugY = mugIsLive ? mugSample[1] : null;
+
+    // bullet-direction-arrow origins for "player" bullets (see viewer-bullets.js) -- only
+    // currently-live players count, since a dead/undetected one can't be the one shooting. Each
+    // carries its own trail color ('red'/'blue', matching makeSegments below) so the arrow reads
+    // as "this player's shot" rather than a fixed, player-agnostic color.
+    const bulletPlayerPositions = [
+      { x: cupX, y: cupY, color: 'red' },
+      { x: mugX, y: mugY, color: 'blue' },
+    ].filter((p) => isFiniteCoord(p.x) && isFiniteCoord(p.y));
 
     // update last-valid coordinates only when samples are numeric
     if (isFiniteCoord(cupX) && isFiniteCoord(cupY)) { lastValidCupX = cupX; lastValidCupY = cupY; }
@@ -855,6 +903,30 @@ export async function createMapViewer({
     );
 
     const enemyVisuals = buildEnemyVisuals();
+
+    const bulletArrows = buildBulletArrows({
+      time: currentTime,
+      bulletPathsByType,
+      bulletConfig,
+      enemyAnchorsByType,
+      playerPositions: bulletPlayerPositions,
+    });
+
+    const bulletArrowSel = mainSel.selectAll('.bullet-arrow').data(bulletArrows, d => d.id);
+    bulletArrowSel.join(
+      enter => enter.append('line').attr('class', 'bullet-arrow')
+        .attr('x1', d => d.x1).attr('y1', d => d.y1)
+        .attr('x2', d => d.x2).attr('y2', d => d.y2)
+        .attr('stroke', d => d.color)
+        .attr('stroke-width', 10)
+        .attr('stroke-linecap', 'round')
+        .attr('marker-end', 'url(#enemy-arrow)'),
+      update => update
+        .attr('x1', d => d.x1).attr('y1', d => d.y1)
+        .attr('x2', d => d.x2).attr('y2', d => d.y2)
+        .attr('stroke', d => d.color),
+      exit => exit.remove()
+    );
 
     const enemyBackSel = d3.select(haloLayer);
 

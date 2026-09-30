@@ -54,11 +54,47 @@ STATIONARY_ENEMIES = {
 MOVING_ENEMIES = {
     daisy,
     blueberry,
-    acorn
+    acorn,
+    # a lobbed, arcing shot rather than a straight-line one (see LINEAR_BULLET_SPEEDS), so it
+    # gets a full reconstructed path like acorn instead of a current-direction arrow
+    tulip_bullet,
 }
 
 MOVING_MINIMIZING_ENEMIES = {
     blueberry
+}
+
+# bullet types tracked separately from ENEMY_KEYS: they get their own per-shot tracks (see
+# coords_transform.transform_run) via the same build_enemy_paths reconnection logic as
+# MOVING_ENEMIES, for the bullet-direction-arrow feature -- but they're kept out of ENEMY_KEYS
+# itself so they never end up in the enemy density heatmap or the Enemies Hit stat, neither of
+# which makes sense for a bullet.
+BULLET_KEYS = {
+    cuphead_bullet,
+    shroom_cloud_pink,
+    shroom_cloud_purple,
+}
+
+# tracked like an enemy (in ENEMY_KEYS, so the viewer draws its full path) but still a bullet, so
+# kept out of the enemy density heatmap -- see agg_coords_[level].json.py's aggregate_enemy_density.
+HEATMAP_EXCLUDED_ENEMIES = {
+    tulip_bullet,
+}
+
+# bullet types whose real motion is a straight line at roughly constant speed, so
+# coords_transform.build_bullet_shots' per-shot line fit can reconstruct individual shots
+# directly from raw detections instead of build_enemy_paths' proximity-based reconnection (see
+# build_bullet_shots for why that matters for e.g. rapid fire). Keyed by (min_speed, max_speed)
+# in px/frame, the plausible range for a real shot of that type -- derived from forest_follies_2's
+# own clean, unambiguous single-shot cuphead_bullet tracks (~40-48px/frame observed, widened
+# slightly for margin). shroom_cloud_pink/purple and tulip_bullet (the latter now tracked as a
+# MOVING_ENEMIES path rather than a bullet) are deliberately excluded: their
+# real shots arc/drift rather than moving in a constant-velocity straight line (confirmed against
+# a real tulip_bullet track -- distance from its stationary anchor rises then falls over the
+# course of one continuous, genuine shot), so this model doesn't apply to them and they keep using
+# build_enemy_paths instead.
+LINEAR_BULLET_SPEEDS = {
+    cuphead_bullet: (30, 60),
 }
 
 # every player character this level has, in priority order. PLAYERS[0] is the primary one: the

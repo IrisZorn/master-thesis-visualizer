@@ -9,10 +9,9 @@ toothy=210,310
 tulip=120,170
 daisy=140,190
 blueberry=100,120
+tulip_bullet=70,70
 
 #TODO: look at clustering
 #TODO: shooting arrows
-
-#TODO: add level statistics? how many retries, how many enemies in level
 
 #TODO: setup server

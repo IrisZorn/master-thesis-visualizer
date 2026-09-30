@@ -85,6 +85,22 @@ STATIONARY_ENEMIES = set()
 MOVING_ENEMIES = (ENEMIES - FIXED_VERTICAL_ENEMIES - FIXED_HORIZONTAL_ENEMIES) | JUNK
 ENEMY_KEYS = FIXED_VERTICAL_ENEMIES | FIXED_HORIZONTAL_ENEMIES | STATIONARY_ENEMIES | MOVING_ENEMIES
 
+# bullet types tracked separately from ENEMY_KEYS for the bullet-direction-arrow feature -- see
+# constants_forest_follies.py's BULLET_KEYS. Only the player's own shots for now: the enemy
+# bullets here are fired by moving bosses, which the arrow code can't anchor to yet (it only
+# supports stationary enemy anchors).
+BULLET_KEYS = {
+    player_bullet,
+}
+
+# see constants_forest_follies.py's LINEAR_BULLET_SPEEDS -- player_bullet moves in a straight line
+# at ~45px/frame here too (median 44.9, p10-p90 41-47 across the shots build_bullet_shots recovered
+# from a 1500-frame sample of wally_warbles_pallytime; widening the range to 110 found nothing
+# more), so it uses the same range as Forest Follies' cuphead_bullet.
+LINEAR_BULLET_SPEEDS = {
+    player_bullet: (30, 60),
+}
+
 # which stage (0-based, matching STAGES) each full-path-instance enemy belongs to -- wally is only
 # around for Stage 1, injured_wally only for Stage 3. Used to keep a stage's aggregated "enemies"
 # data (agg_coords_[level].json.py's build_aggregate) and the live viewer's rendering

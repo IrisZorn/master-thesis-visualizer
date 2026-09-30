@@ -28,6 +28,10 @@ export function createEnemyVisualBuilder({
   stageStarts = [],
   enemyStageIndex = {},
   mapWidth = null,
+  // `${enemyType}:${anchorIndex}` -> [start, end] windows during which one of that stationary
+  // enemy's own bullets (and so its direction arrow) is present -- see viewer-bullets.js's
+  // enemyBulletPresenceByAnchor. Empty on a level with no enemy bullet arrows.
+  bulletPresenceByAnchor = new Map(),
 }) {
   // how close to the map's own left/right boundary (not the camera's, which can be narrower --
   // see cameraLeftEdgeAtTime in visualize.js for that separate check) an enemy has to be, while
@@ -331,7 +335,16 @@ export function createEnemyVisualBuilder({
           });
           const lastDetection = getLastDetectionTime(liveTrack, 3);
           const instanceIsActive = isInstanceActive(liveTrack, 3);
-          const visibility = instanceVisibility(lastDetection);
+          // a dead enemy still greys out right away, but its fade is held off until the last of
+          // its own already-fired bullets (and so its direction arrow) is gone -- only shots fired
+          // before it went quiet, not a later one that just happens to be attributed to it
+          let fadeStart = lastDetection;
+          if (lastDetection != null) {
+            for (const [start, end] of bulletPresenceByAnchor.get(`${enemyType}:${index}`) || []) {
+              if (start <= lastDetection && end > fadeStart) fadeStart = end;
+            }
+          }
+          const visibility = instanceVisibility(fadeStart);
           const instanceFill = instanceIsActive ? "rgba(64, 224, 208, 0.9)" : `rgba(148, 163, 184, ${(0.8 * visibility).toFixed(2)})`;
 
           visuals.stationary.push({ id: `enemy-stationary-${enemyType}-${index}`, type: enemyType, x: anchorX, y: anchorY, color: instanceFill, active: instanceIsActive });
