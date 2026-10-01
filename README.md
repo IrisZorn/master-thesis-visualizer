@@ -1,59 +1,106 @@
-# vis_app
+# Cuphead Gameplay Visualizations
 
-This is an [Observable Framework](https://observablehq.com/framework/) app. To install the required dependencies, run:
+An [Observable Framework](https://observablehq.com/framework/) app that visualizes recorded Cuphead
+playthroughs of two levels, **Forest Follies** and **Aviary Action** (Wally Warbles). Each run can be
+scrubbed through on the level map: player trails, deaths and hits, enemy paths, bullet directions,
+an aggregated route across all playthroughs and an enemy-density heatmap.
 
-```
+The positions come from YOLO detections on gameplay videos. Python data loaders turn those detections
+into the JSON the pages load; all of that happens at build time, so the result is a static site.
+
+## Requirements
+
+- [Node.js](https://nodejs.org/) 18 or newer
+- [Python](https://www.python.org/) 3.9 or newer, with numpy
+
+## Setup
+
+```sh
 npm install
+python -m venv .venv
 ```
 
-Then, to start the local preview server, run:
+Activate the virtual environment and install the Python dependencies:
 
+```sh
+# Windows (PowerShell)
+.venv\Scripts\Activate.ps1
+# macOS / Linux
+source .venv/bin/activate
+
+pip install -r requirements.txt
 ```
+
+## Running locally
+
+With the virtual environment **activated**, start the preview server:
+
+```sh
 npm run dev
 ```
 
-Then visit <http://localhost:3000> to preview your app.
+Then open <http://localhost:3000>.
 
-For more, see <https://observablehq.com/framework/getting-started>.
+The data loaders are run by Framework as `python3`. Activating the venv makes sure that resolves to the
+Python with numpy installed. On Windows, without it, `python3` may instead be the Microsoft Store
+placeholder, and the pages fail to load their data.
+
+## Updating the data
+
+The recordings are pickled detection data (`.pkl`), one file per gameplay video:
+
+| Folder | Contents |
+|---|---|
+| `src/data/resources/play_data/<level>/` | every recording; each one can be selected on its level's page |
+| `src/data/resources/agg_play_data/<level>/` | the recordings pooled into the aggregated route and enemy heatmap |
+
+Expensive steps are precomputed into caches next to them (`enemy_full_paths/`, `aggregate_data/`,
+`precalc_bullet_paths/`). After adding or changing recordings, or changing the pipeline, rebuild them
+**in this order**, since the second script reads what the first one writes:
+
+```sh
+cd src/data
+python build_aggregate_data.py   # known enemy instances, aggregated route, enemy heatmap
+python build_bullet_paths.py     # bullet paths per run (the slow one, ~10 minutes)
+cd ../..
+npm run clean
+```
+
+`npm run clean` is needed because Framework only reruns a data loader when the loader file itself
+changes, not when the `.pkl` files it reads do.
+
+To add a level, add its `constants_<level>.py` to `src/data/levels.py`, plus a
+`src/components/level-config-<level>.js` and a page in `src/` (see the existing two).
+
+## Building
+
+```sh
+npm run build
+```
+
+writes the static site to `dist/`, which can be hosted on any static web host.
 
 ## Project structure
-
-A typical Framework project looks like this:
 
 ```ini
 .
 ├─ src
-│  ├─ components
-│  │  └─ timeline.js           # an importable module
-│  ├─ data
-│  │  ├─ launches.csv.js       # a data loader
-│  │  └─ events.json           # a static data file
-│  ├─ example-dashboard.md     # a page
-│  ├─ example-report.md        # another page
-│  └─ index.md                 # the home page
-├─ .gitignore
-├─ observablehq.config.js      # the app config file
+│  ├─ index.md                  # home page, links to the levels
+│  ├─ forest_follies.md         # level pages
+│  ├─ wally_warbles.md
+│  ├─ components                # the viewer (JavaScript)
+│  │  ├─ visualize.js           # map viewer: rendering, camera, timeline, legend, stats
+│  │  ├─ viewer-*.js            # enemies, bullets, heatmap, controls, helpers
+│  │  └─ level-config-*.js      # per-level type codes and enemy behaviour
+│  └─ data
+│     ├─ run_coords_[level].json.py   # loader: per-run coordinates
+│     ├─ agg_coords_[level].json.py   # loader: aggregate across playthroughs
+│     ├─ build_*.py                   # cache builders (see "Updating the data")
+│     ├─ coords_transform.py          # detection cleaning and track reconstruction
+│     ├─ constants_<level>.py         # per-level type codes and enemy categories
+│     ├─ levels.py                    # registry of all levels
+│     └─ resources                    # recordings, caches, maps and sprites
+├─ observablehq.config.js
 ├─ package.json
-└─ README.md
+└─ requirements.txt
 ```
-
-**`src`** - This is the “source root” — where your source files live. Pages go here. Each page is a Markdown file. Observable Framework uses [file-based routing](https://observablehq.com/framework/project-structure#routing), which means that the name of the file controls where the page is served. You can create as many pages as you like. Use folders to organize your pages.
-
-**`src/index.md`** - This is the home page for your app. You can have as many additional pages as you’d like, but you should always have a home page, too.
-
-**`src/data`** - You can put [data loaders](https://observablehq.com/framework/data-loaders) or static data files anywhere in your source root, but we recommend putting them here.
-
-**`src/components`** - You can put shared [JavaScript modules](https://observablehq.com/framework/imports) anywhere in your source root, but we recommend putting them here. This helps you pull code out of Markdown files and into JavaScript modules, making it easier to reuse code across pages, write tests and run linters, and even share code with vanilla web applications.
-
-**`observablehq.config.js`** - This is the [app configuration](https://observablehq.com/framework/config) file, such as the pages and sections in the sidebar navigation, and the app’s title.
-
-## Command reference
-
-| Command           | Description                                              |
-| ----------------- | -------------------------------------------------------- |
-| `npm install`            | Install or reinstall dependencies                        |
-| `npm run dev`        | Start local preview server                               |
-| `npm run build`      | Build your static site, generating `./dist`              |
-| `npm run deploy`     | Deploy your app to Observable                            |
-| `npm run clean`      | Clear the local data loader cache                        |
-| `npm run observable` | Run commands like `observable help`                      |
