@@ -1,6 +1,6 @@
 import math
 import pickle
-from statistics import median
+from statistics import median, median_low
 
 from coords_transform import aggregate_data_path, build_enemy_paths, enemy_full_paths_path, transform_run
 from helper import distance, cluster_points_by_distance
@@ -24,6 +24,11 @@ STATIONARY_DISTANCE_THRESHOLD = 200
 # instances run into the hundreds/thousands of points, noise tops out
 # around a dozen, so this sits comfortably in the gap between them
 OUTLIER_CLUSTER_SIZE = 50
+# width (in map pixels) of the x bins the pooled player route is aggregated over (see
+# aggregate_spatial_path) -- the same scale as the 120px clustering distance it replaced. Checked
+# against Forest Follies' aggregated runs: one path's points within a bin span a median ~55px
+# vertically, so a bin this wide stays one location rather than smearing a climb or jump.
+ROUTE_BIN_WIDTH = 120
 
 # Enemy occupancy is binned this finely (in map pixels) before being shipped to the viewer.
 # Small enough that a hotspot reads at roughly the scale of a single encounter rather than a
@@ -216,15 +221,29 @@ def valid_points(points):
     return [point for point in points if point and point[0] is not None and point[1] is not None]
 
 
-def aggregate_spatial_path(paths, distance_threshold=120):
-    # cluster_points_by_distance already skips None-marker points
-    all_points = [point for path in paths for point in path]
-    aggregated = sorted(
-        ((median(point[0] for point in cluster), median(point[1] for point in cluster))
-         for cluster in cluster_points_by_distance(all_points, distance_threshold=distance_threshold)),
-        key=lambda point: point[0],
-    )
-    return [(x, y, index) for index, (x, y) in enumerate(aggregated)]
+def aggregate_spatial_path(paths, bin_width=ROUTE_BIN_WIDTH):
+    # The level is cut into bin_width-wide x bins, and each bin gets one route point: first each
+    # path's own median position within the bin, then the median of those across every path that
+    # reached it. So each path counts once per bin however long it lingered there, a path that
+    # ended early just stops contributing past its last bin, and backtracking points fall into the
+    # bins they actually belong to rather than scrambling the route's order. y uses median_low at
+    # both steps, so the route always sits at a height some path was actually at -- with an even
+    # number of paths split between two platforms, a plain median would average the middle two
+    # and float the route in the air between them.
+    per_path_by_bin = {}
+    for path in paths:
+        path_bins = {}
+        for x, y, _ in valid_points(path):
+            path_bins.setdefault(int(x // bin_width), []).append((x, y))
+        for bin_index, points in path_bins.items():
+            per_path_by_bin.setdefault(bin_index, []).append(
+                (median(point[0] for point in points), median_low(point[1] for point in points))
+            )
+
+    return [
+        (median(x for x, _ in medians), median_low(y for _, y in medians), index)
+        for index, medians in enumerate(per_path_by_bin[bin_index] for bin_index in sorted(per_path_by_bin))
+    ]
 
 
 def aggregate_enemy_density(all_runs, level, cell_size=ENEMY_DENSITY_CELL_SIZE):
