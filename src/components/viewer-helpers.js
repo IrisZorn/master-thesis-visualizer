@@ -2,6 +2,26 @@ export function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+// fades out the further `time` has moved past t (fully gone fadeDistance later) -- and is 0 before
+// t, so nothing previews before the scrub position actually reaches it.
+export function fadeOpacity(time, t, fadeDistance) {
+  const dist = time - t;
+  if (dist < 0) return 0;
+  return clamp(1 - dist / fadeDistance, 0, 1);
+}
+
+// highest stage index whose start has passed by `time`, or null on a level with no stages
+// (stageStarts empty) -- stage 0's start is always defined (the run's own stable start).
+export function stageIndexAt(stageStarts, time) {
+  if (!stageStarts.length) return null;
+  let index = null;
+  for (let i = 0; i < stageStarts.length; i++) {
+    const t = stageStarts[i];
+    if (t != null && t <= time) index = i;
+  }
+  return index;
+}
+
 export function findCurrentIndex(path, time) {
   // holds at the last point whose time has already passed, instead of snapping forward to the
   // next upcoming one, so the glyph never previews a position it hasn't reached yet.

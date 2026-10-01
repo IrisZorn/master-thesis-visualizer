@@ -1,14 +1,41 @@
 import * as d3 from "d3";
 import { parseEnemySizes } from "./level-config.js";
-import { Toggle, createLegendRow, createSliderMarkers, createStageButtons, drawStageBoundaryMarkers, makeLegendGlyph, makeLegendGradientGlyph } from "./viewer-controls.js";
+import { Toggle, createCollapsiblePanel, createLegendRow, createSliderMarkers, createStageButtons, drawStageBoundaryMarkers, makeLegendGlyph, makeLegendGradientGlyph } from "./viewer-controls.js";
 import { createEnemyVisualBuilder, getEnemyGlyphSize, getEnemyGlyphSource } from "./viewer-enemies.js";
 import { buildBulletArrows, enemyBulletPresenceByAnchor } from "./viewer-bullets.js";
 import { BAND_BLUR_RADIUS, HEATMAP_COLORS, createEnemyHeatmapBuilder } from "./viewer-heatmap.js";
-import { clamp, findCurrentIndex, flattenEnemyPaths, makePathD, validTimedPoints } from "./viewer-helpers.js";
+import { clamp, fadeOpacity, findCurrentIndex, flattenEnemyPaths, makePathD, stageIndexAt, validTimedPoints } from "./viewer-helpers.js";
 
+const NS = "http://www.w3.org/2000/svg";
+
+// the map image, plus a white wash on top that bleaches it so paths/heatmap drawn over it read
+// more clearly
+function appendMapBackground(svg, mapUrl, width, height) {
+  const image = document.createElementNS(NS, "image");
+  // set both modern href and xlink:href for compatibility
+  image.setAttribute('href', mapUrl);
+  image.setAttributeNS('http://www.w3.org/1999/xlink', 'href', mapUrl);
+  image.setAttribute("x", 0);
+  image.setAttribute("y", 0);
+  image.setAttribute("width", width);
+  image.setAttribute("height", height);
+  image.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+  svg.appendChild(image);
+
+  const wash = document.createElementNS(NS, "rect");
+  wash.setAttribute("x", 0);
+  wash.setAttribute("y", 0);
+  wash.setAttribute("width", width);
+  wash.setAttribute("height", height);
+  wash.setAttribute("fill", "white");
+  wash.setAttribute("fill-opacity", "0.3");
+  wash.style.pointerEvents = "none";
+  svg.appendChild(wash);
+}
+
+// one run of a playthrough: { [type]: points or tracks, stage_starts? } (see run_coords_[level].json.py)
 export async function createMapViewer({
-  data: providedData,
-  curr_playthrough = null,
+  run,
   aggr_players = null,
   totalRuns = null,
   mapUrl,
@@ -23,8 +50,6 @@ export async function createMapViewer({
   showAggregate: initialShowAggregate = true,
   showHeatmap: initialShowHeatmap = false,
 }) {
-
-  const data = providedData ?? curr_playthrough;
 
   /* ---------------- LOAD IMAGE ---------------- */
 
@@ -49,36 +74,12 @@ export async function createMapViewer({
 
   /* ---------------- SVG CANVAS ---------------- */
 
-  const NS = "http://www.w3.org/2000/svg";
-
   const mainSvg = document.createElementNS(NS, "svg");
   mainSvg.setAttribute("width", viewportW);
   mainSvg.setAttribute("height", viewportH);
   mainSvg.style.maxWidth = "100%";
   mainSvg.style.height = "auto";
-
-  // image background
-  const mainImage = document.createElementNS(NS, "image");
-  // set both modern href and xlink:href for compatibility
-  mainImage.setAttribute('href', mapUrl);
-  mainImage.setAttributeNS('http://www.w3.org/1999/xlink', 'href', mapUrl);
-  mainImage.setAttribute("x", 0);
-  mainImage.setAttribute("y", 0);
-  mainImage.setAttribute("width", mapW);
-  mainImage.setAttribute("height", mapH);
-  mainImage.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-  mainSvg.appendChild(mainImage);
-
-  // bleaches the background toward white so paths/heatmap drawn on top read more clearly
-  const mainImageWash = document.createElementNS(NS, "rect");
-  mainImageWash.setAttribute("x", 0);
-  mainImageWash.setAttribute("y", 0);
-  mainImageWash.setAttribute("width", mapW);
-  mainImageWash.setAttribute("height", mapH);
-  mainImageWash.setAttribute("fill", "white");
-  mainImageWash.setAttribute("fill-opacity", "0.3");
-  mainImageWash.style.pointerEvents = "none";
-  mainSvg.appendChild(mainImageWash);
+  appendMapBackground(mainSvg, mapUrl, mapW, mapH);
 
   // aggregated enemy density field: sits directly above the background image and below the halo
   // and main layers, so switching it on never obscures the run being scrubbed
@@ -127,6 +128,7 @@ export async function createMapViewer({
   heatBlurFilter.appendChild(heatBlurGaussian);
   defs.appendChild(heatBlurFilter);
 
+  // arrowhead for the bullet-direction arrows
   const enemyArrow = document.createElementNS(NS, 'marker');
   enemyArrow.setAttribute('id', 'enemy-arrow');
   enemyArrow.setAttribute('markerWidth', '4');
@@ -140,20 +142,6 @@ export async function createMapViewer({
   enemyArrowPath.setAttribute('fill', 'context-stroke');
   enemyArrow.appendChild(enemyArrowPath);
   defs.appendChild(enemyArrow);
-
-  const enemyArrowStart = document.createElementNS(NS, 'marker');
-  enemyArrowStart.setAttribute('id', 'enemy-arrow-start');
-  enemyArrowStart.setAttribute('markerWidth', '4');
-  enemyArrowStart.setAttribute('markerHeight', '4');
-  enemyArrowStart.setAttribute('refX', '0.9');
-  enemyArrowStart.setAttribute('refY', '2');
-  enemyArrowStart.setAttribute('orient', 'auto');
-  enemyArrowStart.setAttribute('markerUnits', 'strokeWidth');
-  const enemyArrowStartPath = document.createElementNS(NS, 'path');
-  enemyArrowStartPath.setAttribute('d', 'M 4 0 L 0 2 L 4 4 z');
-  enemyArrowStartPath.setAttribute('fill', 'context-stroke');
-  enemyArrowStart.appendChild(enemyArrowStartPath);
-  defs.appendChild(enemyArrowStart);
 
   mainSvg.appendChild(defs);
 
@@ -178,27 +166,7 @@ export async function createMapViewer({
     miniSvg.style.maxWidth = "100%";
     miniSvg.style.height = "auto";
 
-    const miniImage = document.createElementNS(NS, "image");
-    // set both modern href and xlink:href for compatibility
-    miniImage.setAttribute('href', mapUrl);
-    miniImage.setAttributeNS('http://www.w3.org/1999/xlink', 'href', mapUrl);
-    miniImage.setAttribute("x", 0);
-    miniImage.setAttribute("y", 0);
-    miniImage.setAttribute("width", miniW);
-    miniImage.setAttribute("height", miniH);
-    miniImage.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-    miniSvg.appendChild(miniImage);
-
-    // bleaches the background toward white so paths/heatmap drawn on top read more clearly
-    const miniImageWash = document.createElementNS(NS, "rect");
-    miniImageWash.setAttribute("x", 0);
-    miniImageWash.setAttribute("y", 0);
-    miniImageWash.setAttribute("width", miniW);
-    miniImageWash.setAttribute("height", miniH);
-    miniImageWash.setAttribute("fill", "white");
-    miniImageWash.setAttribute("fill-opacity", "0.3");
-    miniImageWash.style.pointerEvents = "none";
-    miniSvg.appendChild(miniImageWash);
+    appendMapBackground(miniSvg, mapUrl, miniW, miniH);
 
     miniHeatmapLayer = document.createElementNS(NS, "g");
     miniHeatmapLayer.setAttribute("class", "mini-heatmap-layer");
@@ -218,20 +186,20 @@ export async function createMapViewer({
 
   /* ---------------- PLAYER PATHS ---------------- */
 
-  const cup = data[0][levelConfig.playerTypes.cup] || [];
-  const mug = data[0][levelConfig.playerTypes.mug] || [];
+  const cup = run[levelConfig.playerTypes.cup] || [];
+  const mug = run[levelConfig.playerTypes.mug] || [];
   const enemyAggregates = aggr_players?.enemies || {};
   // each tracked enemy type's per-run tracks live directly under
-  // data[0][type] as an array of point-arrays (one per enemy instance)
+  // run[type] as an array of point-arrays (one per enemy instance)
   const enemyPathsByType = Object.fromEntries(
-    levelConfig.trackedEnemyTypes.map((type) => [type, data[0][type] || []])
+    levelConfig.trackedEnemyTypes.map((type) => [type, run[type] || []])
   );
   // bullet-direction-arrow feature (see viewer-bullets.js): per-shot tracks for each configured
   // bullet type, plus each "enemy" bullet's owner anchors (only stationary enemies have anchors
   // in aggr_players.enemies) -- empty on a level with no bulletConfig.
   const bulletConfig = levelConfig.bulletConfig || {};
   const bulletPathsByType = Object.fromEntries(
-    Object.keys(bulletConfig).map((type) => [type, data[0][type] || []])
+    Object.keys(bulletConfig).map((type) => [type, run[type] || []])
   );
   const enemyAnchorsByType = {};
   for (const config of Object.values(bulletConfig)) {
@@ -247,8 +215,6 @@ export async function createMapViewer({
   // boundary rather than always showing the whole level's aggregate.
   const baseAggCup = aggr_players?.[levelConfig.playerTypes.cup] || [];
   const baseAggMug = aggr_players?.[levelConfig.playerTypes.mug] || [];
-  const cupDeathRaw = data[0][levelConfig.playerTypes.cupDeath] || [];
-  const mugDeathRaw = data[0][levelConfig.playerTypes.mugDeath] || [];
   const deathSprites = {
     C: spriteUrls.cupDeath,
     M: spriteUrls.mugDeath
@@ -266,8 +232,6 @@ export async function createMapViewer({
     mug: { w: 68, h: 70 }
   };
   const miniPlayerMarkerRadius = 15;
-  const cupHitRaw = data[0][levelConfig.playerTypes.cupHit] || [];
-  const mugHitRaw = data[0][levelConfig.playerTypes.mugHit] || [];
   // some levels have no hit-reaction detection stream at all (e.g. Wally Warbles) -- without one
   // there's nothing to base an HP count on, so the HP halo and its legend entry are hidden
   // entirely rather than showing a halo that's always full HP.
@@ -276,22 +240,18 @@ export async function createMapViewer({
     Object.entries(levelConfig.enemyGlyphSources).map(([type, spriteKey]) => [type, spriteUrls[spriteKey]])
   );
   const enemyGlyphSize = parseEnemySizes(enemySizesText, levelConfig.enemyNameToType);
-  const stationaryEnemyTypes = levelConfig.stationaryEnemyTypes;
-  const centeredGlyphEnemyTypes = levelConfig.centeredGlyphEnemyTypes;
-  const ENEMY_INSTANCE_X_THRESHOLD = levelConfig.enemyInstanceXThreshold;
-  const STATIONARY_INSTANCE_THRESHOLD = levelConfig.stationaryInstanceThreshold;
   const WINDOW_DELTA = levelConfig.windowDelta;
   const START_HP = levelConfig.startHp;
 
-  // cupDeathRaw/mugDeathRaw/cupHitRaw/mugHitRaw are already correctly split per player at the
-  // data layer (distinct cuphead_ghost/mugman_ghost, cuphead_hit/mugman_hit source types), so
-  // just validate them directly rather than re-deriving ownership from path proximity: both
-  // players progress through a level in lockstep, so proximity ties are common and previously
-  // always got broken in cup's favor, misattributing mug's hits/deaths to cup.
-  const cupDeath = validTimedPoints(cupDeathRaw);
-  const mugDeath = validTimedPoints(mugDeathRaw);
-  const cupHit = validTimedPoints(cupHitRaw);
-  const mugHit = validTimedPoints(mugHitRaw);
+  // deaths/hits are already correctly split per player at the data layer (distinct
+  // cuphead_ghost/mugman_ghost, cuphead_hit/mugman_hit source types), so just validate them
+  // directly rather than re-deriving ownership from path proximity: both players progress through
+  // a level in lockstep, so proximity ties are common and previously always got broken in cup's
+  // favor, misattributing mug's hits/deaths to cup.
+  const cupDeath = validTimedPoints(run[levelConfig.playerTypes.cupDeath]);
+  const mugDeath = validTimedPoints(run[levelConfig.playerTypes.mugDeath]);
+  const cupHit = validTimedPoints(run[levelConfig.playerTypes.cupHit]);
+  const mugHit = validTimedPoints(run[levelConfig.playerTypes.mugHit]);
 
   // cup/mug (the main path) has each death/hit's own position folded into it (see
   // coords_transform.py's clean_player_path) so the trail-line segments have somewhere to end
@@ -348,10 +308,10 @@ export async function createMapViewer({
   sliderWrapper.append(slider, sliderMarkers);
 
   /* ---------------- STAGES ---------------- */
-  // data[0].stage_starts (see coords_transform.stage_start_times) is only present on levels with
+  // run.stage_starts (see coords_transform.stage_start_times) is only present on levels with
   // STAGES (e.g. Wally Warbles) -- absent on Forest Follies, which leaves stageStarts empty and
   // skips this whole block.
-  const stageStarts = data[0].stage_starts || [];
+  const stageStarts = run.stage_starts || [];
   const stageNames = levelConfig.stageNames || [];
   let stageButtonsRow = null;
 
@@ -376,18 +336,6 @@ export async function createMapViewer({
         render();
       },
     });
-  }
-
-  // highest stage index whose start has passed, or null on a level with no stages (stageStarts
-  // empty) -- used to pick which stage's own aggregate (pooled path/heatmap) is showing right now.
-  function currentStageIndex() {
-    if (!stageStarts.length) return null;
-    let index = null;
-    for (let i = 0; i < stageStarts.length; i++) {
-      const t = stageStarts[i];
-      if (t != null && t <= currentTime) index = i;
-    }
-    return index;
   }
 
   /* ---------------- LAYER TOGGLES / POPUP LEGEND ---------------- */
@@ -427,15 +375,15 @@ export async function createMapViewer({
     enemyAggregates,
     enemyPathsByType,
     enemyPaths,
-    stationaryEnemyTypes,
-    centeredGlyphEnemyTypes,
+    stationaryEnemyTypes: levelConfig.stationaryEnemyTypes,
+    centeredGlyphEnemyTypes: levelConfig.centeredGlyphEnemyTypes,
     fixedHorizontalEnemyTypes: levelConfig.fixedHorizontalEnemyTypes,
     neverFadeEnemyTypes: levelConfig.neverFadeEnemyTypes,
     holdLastPositionEnemyTypes: levelConfig.holdLastPositionEnemyTypes,
     minimizingEnemyTypes: levelConfig.minimizingEnemyTypes,
     minimizingChainDistance: levelConfig.minimizingChainDistance,
-    enemyInstanceXThreshold: ENEMY_INSTANCE_X_THRESHOLD,
-    stationaryInstanceThreshold: STATIONARY_INSTANCE_THRESHOLD,
+    enemyInstanceXThreshold: levelConfig.enemyInstanceXThreshold,
+    stationaryInstanceThreshold: levelConfig.stationaryInstanceThreshold,
     showEnemy: () => showEnemyToggle.value,
     stageStarts,
     enemyStageIndex: levelConfig.enemyStageIndex || {},
@@ -492,57 +440,7 @@ export async function createMapViewer({
   // Built once here (not in the CONTAINER section below) so it already exists by the time the
   // first render() call runs -- render() updates these rows' values directly rather than
   // recreating them every frame.
-  const statsPanel = document.createElement('div');
-  statsPanel.style.position = 'absolute';
-  statsPanel.style.top = '10px';
-  statsPanel.style.right = '10px';
-  statsPanel.style.background = 'white';
-  statsPanel.style.border = '1px solid #ccc';
-  statsPanel.style.borderRadius = '4px';
-  statsPanel.style.boxShadow = '0 2px 8px rgba(0,0,0,0.12)';
-  statsPanel.style.padding = '6px 8px';
-  statsPanel.style.fontFamily = 'sans-serif';
-  statsPanel.style.fontSize = '13px';
-  statsPanel.style.display = 'flex';
-  statsPanel.style.flexDirection = 'column';
-  statsPanel.style.gap = '6px';
-  statsPanel.style.width = '180px';
-  statsPanel.style.boxSizing = 'border-box';
-  statsPanel.style.zIndex = '1000';
-
-  // header row toggles the body's visibility, same collapse pattern as the map legend
-  // (legendHeader/legendBody below)
-  const statsHeader = document.createElement('div');
-  statsHeader.style.display = 'flex';
-  statsHeader.style.alignItems = 'center';
-  statsHeader.style.justifyContent = 'space-between';
-  statsHeader.style.gap = '12px';
-  statsHeader.style.cursor = 'pointer';
-  statsHeader.style.userSelect = 'none';
-  statsHeader.style.fontWeight = 'bold';
-
-  const statsTitle = document.createElement('div');
-  statsTitle.textContent = 'Run Statistics';
-
-  const statsArrow = document.createElement('div');
-  statsArrow.textContent = '▾'; // ▾, flips to ▸ when collapsed
-  statsArrow.style.fontSize = '12px';
-
-  statsHeader.append(statsTitle, statsArrow);
-
-  const statsBody = document.createElement('div');
-  statsBody.style.display = 'flex';
-  statsBody.style.flexDirection = 'column';
-  statsBody.style.gap = '6px';
-
-  let statsCollapsed = false;
-  statsHeader.addEventListener('click', () => {
-    statsCollapsed = !statsCollapsed;
-    statsBody.style.display = statsCollapsed ? 'none' : 'flex';
-    statsArrow.textContent = statsCollapsed ? '▸' : '▾';
-  });
-
-  statsPanel.append(statsHeader, statsBody);
+  const { panel: statsPanel, body: statsBody } = createCollapsiblePanel('Run Statistics', { right: '10px', width: '180px', boxSizing: 'border-box' });
 
   function createStatRow(label) {
     const row = document.createElement('div');
@@ -579,27 +477,10 @@ export async function createMapViewer({
   const mugDeathsStat = hasMug ? createStatRow('Mugman Deaths') : null;
   const enemyHitsStat = createStatRow('Enemies Hit');
 
-  // fade a segment out the further currentTime has moved past it -- never fade one in ahead of
-  // time, so nothing previews before the scrub position actually reaches it.
-  const FADE_DISTANCE = WINDOW_DELTA;
-  function segmentOpacity(t1, t2) {
-    const avg = (t1 + t2) / 2;
-    const dist = currentTime - avg;
-    if (dist < 0) return 0;
-    return clamp(1 - dist / FADE_DISTANCE, 0, 1);
-  }
-
   // HP helpers (START_HP default 3)
   function hpAtTime(who, t) {
     const hits = who === 'cup' ? cupHit : mugHit;
-    if (!hits || !hits.length) return START_HP;
-    let count = 0;
-    for (let i = 0; i < hits.length; i++) {
-      const p = hits[i];
-      if (!p || p[2] == null) continue;
-      if (p[2] <= t) count += 1;
-    }
-    return Math.max(0, START_HP - count);
+    return Math.max(0, START_HP - hits.filter((p) => p[2] <= t).length);
   }
   function hpColor(hp) {
     const hpClamped = clamp(Math.round(hp), 0, START_HP);
@@ -633,7 +514,7 @@ export async function createMapViewer({
     // before any stage starts, or on a level with no stages at all) -- shadows the module-level
     // baseAggCup/baseAggMug for the rest of this render pass so every use below (main overlay,
     // minimap) automatically follows the same choice.
-    const stageIndex = currentStageIndex();
+    const stageIndex = stageIndexAt(stageStarts, currentTime);
     const stageAggregate = stageIndex != null ? aggr_players?.stages?.[stageIndex] : null;
     const aggCup = stageAggregate ? (stageAggregate[levelConfig.playerTypes.cup] || []) : baseAggCup;
     const aggMug = stageAggregate ? (stageAggregate[levelConfig.playerTypes.mug] || []) : baseAggMug;
@@ -739,7 +620,8 @@ export async function createMapViewer({
 
     // prepare segment data for cup and mug (only within WINDOW_DELTA range behind currentTime,
     // never ahead of it)
-    function makeSegments(points, color, strokeWidth=6, prefix='seg', who='cup') {
+    function makeSegments(points, color, who) {
+      const strokeWidth = 6;
       const start = currentTime - WINDOW_DELTA;
       const segs = [];
       let fallbackSegment = null;
@@ -751,7 +633,7 @@ export async function createMapViewer({
         const t2 = b[2];
         if (t1 == null || t2 == null) continue;
         const tmid = (t1 + t2) / 2;
-        const segment = { id: `${prefix}-${i-1}`, x1: a[0], y1: a[1], x2: b[0], y2: b[1], points: [[a[0], a[1]], [b[0], b[1]]], color, strokeWidth, opacity: segmentOpacity(t1, t2), who, t: tmid };
+        const segment = { id: `${who}-${i-1}`, x1: a[0], y1: a[1], x2: b[0], y2: b[1], points: [[a[0], a[1]], [b[0], b[1]]], color, strokeWidth, opacity: fadeOpacity(currentTime, tmid, WINDOW_DELTA), who, t: tmid };
         if (!fallbackSegment) fallbackSegment = segment;
         if (Math.max(t1, t2) < start) continue;
         if (Math.min(t1, t2) > currentTime) continue;
@@ -766,8 +648,8 @@ export async function createMapViewer({
       return segs;
     }
 
-    const cupSegs = makeSegments(cup, 'red', 6, 'cup', 'cup');
-    const mugSegs = makeSegments(mug, 'blue', 6, 'mug', 'mug');
+    const cupSegs = makeSegments(cup, 'red', 'cup');
+    const mugSegs = makeSegments(mug, 'blue', 'mug');
     const allSegs = [];
     if (showCupToggle.value) allSegs.push(...cupSegs);
     if (showMugToggle.value) allSegs.push(...mugSegs);
@@ -783,8 +665,7 @@ export async function createMapViewer({
       for (const seg of segs) {
         const hp = hpAtTime(seg.who, seg.t);
         const color = hpColor(hp);
-        const startPoint = seg.points?.[0] ?? [seg.x1, seg.y1];
-        const endPoint = seg.points?.[1] ?? [seg.x2, seg.y2];
+        const [startPoint, endPoint] = seg.points;
         const shouldBreakForVisibility = seg.opacity < MIN_VISIBLE_SEGMENT_OPACITY;
 
         if (!currentGroup || currentGroup.who !== seg.who || currentGroup.hp !== hp || shouldBreakForVisibility) {
@@ -938,16 +819,12 @@ export async function createMapViewer({
         .attr('stroke', d => d.stroke)
         .attr('stroke-width', d => d.width)
         .attr('stroke-opacity', d => d.opacity ?? 1)
-        .attr('marker-start', d => d.arrow ? 'url(#enemy-arrow-start)' : null)
-        .attr('marker-end', d => d.arrow ? 'url(#enemy-arrow)' : null)
         .attr('stroke-linecap', 'round')
         .attr('stroke-linejoin', 'round'),
       update => update
         .attr('d', d => makePathD(d.points))
         .attr('stroke', d => d.stroke)
         .attr('stroke-opacity', d => d.opacity ?? 1)
-        .attr('marker-start', d => d.arrow ? 'url(#enemy-arrow-start)' : null)
-        .attr('marker-end', d => d.arrow ? 'url(#enemy-arrow)' : null)
         .attr('stroke-width', d => d.width),
       exit => exit.remove()
     );
@@ -974,29 +851,17 @@ export async function createMapViewer({
         const group = enter.append('g').attr('class', 'enemy-glyph');
         group.append('rect')
           .attr('class', 'enemy-glyph-badge')
-          .attr('x', -35)
-          .attr('y', -42)
-          .attr('width', 70)
-          .attr('height', 84)
           .attr('rx', 12)
           .attr('ry', 12)
           .attr('stroke', 'white')
           .attr('stroke-width', 2);
         group.append('rect')
           .attr('class', 'enemy-glyph-bg')
-          .attr('x', -27)
-          .attr('y', -34)
-          .attr('width', 54)
-          .attr('height', 68)
           .attr('rx', 9)
           .attr('ry', 9)
           .attr('fill', 'rgba(255,255,255,0.16)');
         group.append('foreignObject')
           .attr('class', 'enemy-glyph-fo')
-          .attr('x', -27)
-          .attr('y', -34)
-          .attr('width', 54)
-          .attr('height', 68)
           .html(`<div xmlns="http://www.w3.org/1999/xhtml" style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:12px;"><img class="enemy-glyph-sprite" style="width:100%;height:100%;object-fit:contain;display:block;" /></div>`);
         // debug: track index, so a glyph on screen can be matched back to its entry in the
         // python-side track list (e.g. daisy[12]) without guessing from position alone
@@ -1026,7 +891,6 @@ export async function createMapViewer({
           .attr('width', w + 16)
           .attr('height', h + 16);
         group.select('.enemy-glyph-bg')
-          .attr('fill', 'rgba(255,255,255,0.16)')
           .attr('x', -w / 2)
           .attr('y', -h / 2)
           .attr('width', w)
@@ -1040,10 +904,7 @@ export async function createMapViewer({
           .attr('y', -(h + 16) / 2 - 6)
           .text(d.label != null ? d.label : '');
         const sprite = this.querySelector('.enemy-glyph-sprite');
-        if (sprite) {
-          sprite.setAttribute('src', getEnemyGlyphSource(d.type, enemySprites, spriteUrls, levelConfig.enemySpritesFallbackKey));
-          sprite.style.filter = 'none';
-        }
+        if (sprite) sprite.setAttribute('src', getEnemyGlyphSource(d.type, enemySprites, spriteUrls, levelConfig.enemySpritesFallbackKey));
       });
 
     const segSel = mainSel.selectAll('.segment').data(allSegs, d => d.id);
@@ -1097,20 +958,19 @@ export async function createMapViewer({
     )
       .each(function() { this.parentNode?.appendChild(this); });
 
-    // deaths + hits: fade with timestamp like segments, only once currentTime has reached them
-    function eventOpacity(t) {
-      const dist = currentTime - t;
-      if (dist < 0) return 0;
-      return clamp(1 - dist / FADE_DISTANCE, 0, 1);
-    }
+    // deaths + hits: a badge with the player's color and the event's sprite, fading with timestamp
+    // like segments, only once currentTime has reached them
+    function joinEventBadges(kind, show, cupPoints, mugPoints, sprites, opacityScale) {
+      if (!show) {
+        mainSel.selectAll(`.${kind}`).remove();
+        return;
+      }
 
-    // deaths
-    if (showDeathToggle.value) {
-      function deathData(points, color, label) {
+      function eventData(points, color, label) {
         return points
           .filter(p => p && p[0] != null && p[2] <= currentTime)
           .map((p, i) => ({
-            id: `death-${label}-${i}-${p[2]}`,
+            id: `${kind}-${label}-${i}-${p[2]}`,
             x: p[0],
             y: p[1],
             color,
@@ -1119,18 +979,17 @@ export async function createMapViewer({
           }));
       }
 
-      const deaths = deathData(cupDeath, '#d62828', 'C').concat(deathData(mugDeath, '#2563eb', 'M'));
+      const events = eventData(cupPoints, '#d62828', 'C').concat(eventData(mugPoints, '#2563eb', 'M'));
       const badgeWidth = 70;
       const badgeHeight = 84;
       const spriteInset = 8;
 
-      const gsel = mainSel.selectAll('.death').data(deaths, d => d.id);
-      gsel.join(
+      mainSel.selectAll(`.${kind}`).data(events, d => d.id).join(
         enter => {
-          const group = enter.append('g').attr('class', 'death');
+          const group = enter.append('g').attr('class', kind);
 
           group.append('rect')
-            .attr('class', 'death-badge')
+            .attr('class', `${kind}-badge`)
             .attr('x', -badgeWidth / 2)
             .attr('y', -badgeHeight / 2)
             .attr('width', badgeWidth)
@@ -1141,7 +1000,7 @@ export async function createMapViewer({
             .attr('stroke-width', 2);
 
           group.append('rect')
-            .attr('class', 'death-sprite-bg')
+            .attr('class', `${kind}-sprite-bg`)
             .attr('x', -badgeWidth / 2 + spriteInset)
             .attr('y', -badgeHeight / 2 + spriteInset)
             .attr('width', badgeWidth - spriteInset * 2)
@@ -1151,12 +1010,12 @@ export async function createMapViewer({
             .attr('fill', 'rgba(255,255,255,0.16)');
 
           group.append('foreignObject')
-            .attr('class', 'death-sprite-fo')
+            .attr('class', `${kind}-sprite-fo`)
             .attr('x', -badgeWidth / 2 + spriteInset)
             .attr('y', -badgeHeight / 2 + spriteInset)
             .attr('width', badgeWidth - spriteInset * 2)
             .attr('height', badgeHeight - spriteInset * 2)
-            .html(`<div xmlns="http://www.w3.org/1999/xhtml" style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:12px;"><img class="death-sprite" style="width:100%;height:100%;object-fit:cover;display:block;" /></div>`);
+            .html(`<div xmlns="http://www.w3.org/1999/xhtml" style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:12px;"><img class="${kind}-sprite" style="width:100%;height:100%;object-fit:cover;display:block;" /></div>`);
 
           return group;
         },
@@ -1164,88 +1023,17 @@ export async function createMapViewer({
         exit => exit.remove()
       )
         .attr('transform', d => `translate(${d.x}, ${d.y})`)
-        .attr('opacity', d => Math.min(1, eventOpacity(d.t) * 1.5))
+        .attr('opacity', d => Math.min(1, fadeOpacity(currentTime, d.t, WINDOW_DELTA) * opacityScale))
         .each(function() { this.parentNode?.appendChild(this); })
         .each(function(d) {
-          const group = d3.select(this);
-          group.select('.death-badge').attr('fill', d.color);
-          const sprite = this.querySelector('.death-sprite');
-          if (sprite) sprite.setAttribute('src', deathSprites[d.label]);
+          d3.select(this).select(`.${kind}-badge`).attr('fill', d.color);
+          const sprite = this.querySelector(`.${kind}-sprite`);
+          if (sprite) sprite.setAttribute('src', sprites[d.label]);
         });
-    } else {
-      mainSel.selectAll('.death').remove();
     }
 
-    // hits
-    if (showHitToggle.value) {
-      function hitData(points, color, label) {
-        return points
-          .filter(p => p && p[0] != null && p[2] <= currentTime)
-          .map((p, i) => ({
-            id: `hit-${label}-${i}-${p[2]}`,
-            x: p[0],
-            y: p[1],
-            color,
-            label,
-            t: p[2]
-          }));
-      }
-      const hits = hitData(cupHit, '#d62828', 'C').concat(hitData(mugHit, '#2563eb', 'M'));
-      const badgeWidth = 70;
-      const badgeHeight = 84;
-      const spriteInset = 8;
-
-      const gsel2 = mainSel.selectAll('.hit').data(hits, d => d.id);
-      gsel2.join(
-        enter => {
-          const group = enter.append('g').attr('class', 'hit');
-
-          group.append('rect')
-            .attr('class', 'hit-badge')
-            .attr('x', -badgeWidth / 2)
-            .attr('y', -badgeHeight / 2)
-            .attr('width', badgeWidth)
-            .attr('height', badgeHeight)
-            .attr('rx', 12)
-            .attr('ry', 12)
-            .attr('stroke', 'white')
-            .attr('stroke-width', 2);
-
-          group.append('rect')
-            .attr('class', 'hit-sprite-bg')
-            .attr('x', -badgeWidth / 2 + spriteInset)
-            .attr('y', -badgeHeight / 2 + spriteInset)
-            .attr('width', badgeWidth - spriteInset * 2)
-            .attr('height', badgeHeight - spriteInset * 2)
-            .attr('rx', 9)
-            .attr('ry', 9)
-            .attr('fill', 'rgba(255,255,255,0.16)');
-
-          group.append('foreignObject')
-            .attr('class', 'hit-sprite-fo')
-            .attr('x', -badgeWidth / 2 + spriteInset)
-            .attr('y', -badgeHeight / 2 + spriteInset)
-            .attr('width', badgeWidth - spriteInset * 2)
-            .attr('height', badgeHeight - spriteInset * 2)
-            .html(`<div xmlns="http://www.w3.org/1999/xhtml" style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:12px;"><img class="hit-sprite" style="width:100%;height:100%;object-fit:cover;display:block;" /></div>`);
-
-          return group;
-        },
-        update => update,
-        exit => exit.remove()
-      )
-        .attr('transform', d => `translate(${d.x}, ${d.y})`)
-        .attr('opacity', d => Math.min(1, eventOpacity(d.t) * 1.25))
-        .each(function() { this.parentNode?.appendChild(this); })
-        .each(function(d) {
-          const group = d3.select(this);
-          group.select('.hit-badge').attr('fill', d.color);
-          const sprite = this.querySelector('.hit-sprite');
-          if (sprite) sprite.setAttribute('src', hitSprites[d.label]);
-        });
-    } else {
-      mainSel.selectAll('.hit').remove();
-    }
+    joinEventBadges('death', showDeathToggle.value, cupDeath, mugDeath, deathSprites, 1.5);
+    joinEventBadges('hit', showHitToggle.value, cupHit, mugHit, hitSprites, 1.25);
 
     // keep ghost/death glyphs above hit glyphs regardless of render order above
     mainSel.selectAll('.death').each(function() { this.parentNode?.appendChild(this); });
@@ -1254,8 +1042,6 @@ export async function createMapViewer({
     if (showMinimap) {
       const miniSel = d3.select(miniLayers);
 
-      const miniAggCupPoints = aggCup.filter(p => p && p[0] != null).map(p => ({ x: p[0] * scaleX, y: p[1] * scaleY }));
-      const miniAggMugPoints = aggMug.filter(p => p && p[0] != null).map(p => ({ x: p[0] * scaleX, y: p[1] * scaleY }));
       const miniPlayers = [];
       if (showCupToggle.value && isFiniteCoord(displayCupX) && isFiniteCoord(displayCupY)) {
         miniPlayers.push({ id: 'mini-cup-player', x: displayCupX * scaleX, y: displayCupY * scaleY, color: 'red', r: miniPlayerMarkerRadius });
@@ -1265,23 +1051,16 @@ export async function createMapViewer({
       }
 
       function makePolyPoints(arr) { return arr.map(d=>`${d.x},${d.y}`).join(' '); }
-      const miniAggCup = miniSel.selectAll('.mini-agg-cup').data(showAggregateToggle.value && miniAggCupPoints.length > 1 ? [miniAggCupPoints] : []);
-      miniAggCup.join(
-        enter => enter.append('polyline').attr('class','mini-agg-cup')
-          .attr('points', makePolyPoints)
-          .attr('fill','none').attr('stroke','rgba(255,0,0,0.35)').attr('stroke-width',20),
-        update => update.attr('points', makePolyPoints).attr('stroke','rgba(255,0,0,0.35)').attr('stroke-width',20),
-        exit => exit.remove()
-      );
-
-      const miniAggMug = miniSel.selectAll('.mini-agg-mug').data(showAggregateToggle.value && miniAggMugPoints.length > 1 ? [miniAggMugPoints] : []);
-      miniAggMug.join(
-        enter => enter.append('polyline').attr('class','mini-agg-mug')
-          .attr('points', makePolyPoints)
-          .attr('fill','none').attr('stroke','rgba(0,0,255,0.35)').attr('stroke-width',20),
-        update => update.attr('points', makePolyPoints).attr('stroke','rgba(0,0,255,0.35)').attr('stroke-width',20),
-        exit => exit.remove()
-      );
+      for (const [className, aggPoints, color] of [['mini-agg-cup', aggCup, 'rgba(255,0,0,0.35)'], ['mini-agg-mug', aggMug, 'rgba(0,0,255,0.35)']]) {
+        const miniPoints = aggPoints.filter(p => p && p[0] != null).map(p => ({ x: p[0] * scaleX, y: p[1] * scaleY }));
+        miniSel.selectAll(`.${className}`).data(showAggregateToggle.value && miniPoints.length > 1 ? [miniPoints] : []).join(
+          enter => enter.append('polyline').attr('class', className)
+            .attr('points', makePolyPoints)
+            .attr('fill','none').attr('stroke', color).attr('stroke-width',20),
+          update => update.attr('points', makePolyPoints).attr('stroke', color).attr('stroke-width',20),
+          exit => exit.remove()
+        );
+      }
 
       const miniPlayerSel = miniSel.selectAll('.mini-player').data(miniPlayers, d => d.id);
       miniPlayerSel.join(
@@ -1330,44 +1109,24 @@ export async function createMapViewer({
   setSliderMarkers();
 
   /* ---------------- CONTAINER ---------------- */
-  const container = document.createElement('div');
-  container.style.display = 'flex';
-  container.style.flexDirection = 'column';
-  container.style.gap = '10px';
-
-  if (showMinimap) container.append(miniSvg);
-  container.append(mainSvg, sliderWrapper);
-  if (stageButtonsRow) container.append(stageButtonsRow);
-
-  // create main wrapper and move mainSvg inside it so legend won't overlap minimap
+  // the main map sits in a wrapper so the stats panel and legend can float over it without
+  // overlapping the minimap
   const mainWrapper = document.createElement('div');
   mainWrapper.className = 'main-wrapper';
   mainWrapper.style.position = 'relative';
   mainWrapper.style.display = 'inline-block';
   mainWrapper.style.width = '100%';
   mainWrapper.style.boxSizing = 'border-box';
+  mainWrapper.append(mainSvg, statsPanel);
 
-  // replace mainSvg in container with wrapper containing mainSvg
-  container.replaceChild(mainWrapper, mainSvg);
-  mainWrapper.appendChild(mainSvg);
-  mainWrapper.appendChild(statsPanel);
+  const container = document.createElement('div');
+  container.style.display = 'flex';
+  container.style.flexDirection = 'column';
+  container.style.gap = '10px';
 
-  // build a compact left-top legend owned by the viewer
-  const leftLegend = document.createElement('div');
-  leftLegend.style.position = 'absolute';
-  leftLegend.style.top = '10px';
-  leftLegend.style.left = '10px';
-  leftLegend.style.background = 'white';
-  leftLegend.style.padding = '6px 8px';
-  leftLegend.style.border = '1px solid #ccc';
-  leftLegend.style.borderRadius = '4px';
-  leftLegend.style.boxShadow = '0 2px 8px rgba(0,0,0,0.12)';
-  leftLegend.style.fontFamily = 'sans-serif';
-  leftLegend.style.fontSize = '13px';
-  leftLegend.style.zIndex = '1000';
-  leftLegend.style.display = 'flex';
-  leftLegend.style.flexDirection = 'column';
-  leftLegend.style.gap = '6px';
+  if (showMinimap) container.append(miniSvg);
+  container.append(mainWrapper, sliderWrapper);
+  if (stageButtonsRow) container.append(stageButtonsRow);
 
   const rerenderFromControls = () => {
     try {
@@ -1378,38 +1137,8 @@ export async function createMapViewer({
     }
   };
 
-  // header row toggles the body's visibility -- collapsed by default state stays expanded, only
-  // the arrow glyph and body display flip, so nothing about the legend's own toggles is affected
-  const legendHeader = document.createElement('div');
-  legendHeader.style.display = 'flex';
-  legendHeader.style.alignItems = 'center';
-  legendHeader.style.justifyContent = 'space-between';
-  legendHeader.style.gap = '12px';
-  legendHeader.style.cursor = 'pointer';
-  legendHeader.style.userSelect = 'none';
-  legendHeader.style.fontWeight = 'bold';
-
-  const legendTitle = document.createElement('div');
-  legendTitle.textContent = 'Legend';
-
-  const legendArrow = document.createElement('div');
-  legendArrow.textContent = '▾'; // ▾, flips to ▸ when collapsed
-  legendArrow.style.fontSize = '12px';
-
-  legendHeader.append(legendTitle, legendArrow);
-
-  const legendBody = document.createElement('div');
-  legendBody.style.display = 'flex';
-  legendBody.style.flexDirection = 'column';
-  legendBody.style.gap = '6px';
-
-  let legendCollapsed = false;
-  legendHeader.addEventListener('click', () => {
-    legendCollapsed = !legendCollapsed;
-    legendBody.style.display = legendCollapsed ? 'none' : 'flex';
-    legendArrow.textContent = legendCollapsed ? '▸' : '▾';
-  });
-
+  // compact left-top legend owned by the viewer; each row toggles one layer
+  const { panel: leftLegend, body: legendBody } = createCollapsiblePanel('Legend', { left: '10px' });
   legendBody.appendChild(createLegendRow({ label: 'Cup', color: '#ff0000', getter: () => showCupToggle.value, setter: v => { showCupToggle.value = v; }, onChange: rerenderFromControls }));
   legendBody.appendChild(createLegendRow({ label: 'Mug', color: '#0000ff', getter: () => showMugToggle.value, setter: v => { showMugToggle.value = v; }, onChange: rerenderFromControls }));
   const enemyLegendSpriteKey = levelConfig.enemyLegendSpriteKey
@@ -1421,7 +1150,6 @@ export async function createMapViewer({
   if (hasHitTracking) {
     legendBody.appendChild(createLegendRow({ label: 'Hit', color: '#000000', getter: () => showHitToggle.value, setter: v => { showHitToggle.value = v; }, glyphNode: makeLegendGlyph(hitSprites.C, 'transparent', 'black'), onChange: rerenderFromControls }));
   }
-  leftLegend.append(legendHeader, legendBody);
   mainWrapper.appendChild(leftLegend);
 
   return container;

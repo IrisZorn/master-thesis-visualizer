@@ -8,10 +8,8 @@ import { createMapViewer } from "./components/visualize.js";
 import { createLevelConfig } from "./components/level-config.js";
 import { FOREST_FOLLIES_LEVEL_CONFIG } from "./components/level-config-forest-follies.js";
 
-// load data (FileAttachment) and provide a file-input fallback in the browser if needed
-let aggr_players;
-
-aggr_players = await FileAttachment("./data/agg_coords_forest_follies.json").json();
+// aggregate across every playthrough (see data/agg_coords_[level].json.py)
+const aggr_players = await FileAttachment("./data/agg_coords_forest_follies.json").json();
 
 const mapUrl = await FileAttachment("./data/resources/forest_follies_stitched.png").url();
 const enemySizesText = await FileAttachment("./data/resources/sprites/forest_follies/sprite_sizes.txt").text();
@@ -61,7 +59,7 @@ const selectedRun = Generators.input(runSelect);
 // are owned by the viewer itself. Reruns whenever selectedPlaythrough or selectedRun changes.
 const runIndex = Number(selectedRun.replace('Run ', '')) - 1;
 const currentViewer = await createMapViewer({
-	curr_playthrough: [playthroughsByFile[selectedPlaythrough][runIndex]],
+	run: playthroughsByFile[selectedPlaythrough][runIndex],
 	totalRuns: playthroughsByFile[selectedPlaythrough].length,
 	mapUrl,
 	spriteUrls,

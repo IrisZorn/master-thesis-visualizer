@@ -130,8 +130,6 @@ def precalc_bullet_paths_path(level):
 
 
 def is_coop_footage(point_dict, level):
-    # shared by run_coords_[level].json.py and build_bullet_paths.py, which must agree on it: it
-    # changes transform_run's run window, and with it which bullet detections get used
     totals = {
         player["main"]: sum(len(run.get(player["main"]) or []) for run in point_dict)
         for player in level.PLAYERS
@@ -141,6 +139,22 @@ def is_coop_footage(point_dict, level):
         totals[player["main"]] * COOP_RATIO_THRESHOLD > primary_total
         for player in level.PLAYERS[1:]
     )
+
+
+def transform_recording(point_dict, level, run_bullet_paths=None):
+    # transform_run over every run of one recording -- one result per run, None for a discarded
+    # one. Shared by run_coords_[level].json.py and build_bullet_paths.py, which must agree on
+    # is_coop/has_next_run: both change the run window, and with it which bullet detections get
+    # used. run_bullet_paths holds each run's precalculated bullets, or None to compute them here.
+    is_coop = is_coop_footage(point_dict, level)
+    if run_bullet_paths is None:
+        run_bullet_paths = [None] * len(point_dict)
+
+    last_index = len(point_dict) - 1
+    return [
+        transform_run(run, level, is_coop=is_coop, has_next_run=index < last_index, bullet_paths=run_bullet_paths[index])
+        for index, run in enumerate(point_dict)
+    ]
 
 
 def load_known_enemy_instances(level):

@@ -3,7 +3,6 @@ import { clamp } from "./viewer-helpers.js";
 export class Toggle {
   constructor(value = true) {
     this._value = !!value;
-    this._listeners = [];
   }
 
   get value() {
@@ -12,12 +11,72 @@ export class Toggle {
 
   set value(value) {
     this._value = !!value;
-    this._listeners.forEach((listener) => listener(this._value));
   }
+}
 
-  oninput(listener) {
-    this._listeners.push(listener);
-  }
+// matches the native range input's own min/max mapping ((value - min) / (max - min)) -- the
+// input's min is startTime, not 0 (see visualize.js), so a marker's position has to account for
+// that same offset or it lands to the right of where the thumb actually sits at that timestamp.
+function sliderPercent(time, startTime, maxTime) {
+  if (!maxTime || maxTime === startTime) return 0;
+  return clamp(((time - startTime) / (maxTime - startTime)) * 100, 0, 100);
+}
+
+// a floating panel over the map (position: e.g. { left: "10px" }) whose bold header row collapses
+// and expands its body. Returns both, so the caller fills the body.
+export function createCollapsiblePanel(title, position) {
+  const panel = document.createElement("div");
+  Object.assign(panel.style, {
+    position: "absolute",
+    top: "10px",
+    background: "white",
+    border: "1px solid #ccc",
+    borderRadius: "4px",
+    boxShadow: "0 2px 8px rgba(0,0,0,0.12)",
+    padding: "6px 8px",
+    fontFamily: "sans-serif",
+    fontSize: "13px",
+    display: "flex",
+    flexDirection: "column",
+    gap: "6px",
+    zIndex: "1000",
+    ...position,
+  });
+
+  const header = document.createElement("div");
+  Object.assign(header.style, {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: "12px",
+    cursor: "pointer",
+    userSelect: "none",
+    fontWeight: "bold",
+  });
+
+  const titleEl = document.createElement("div");
+  titleEl.textContent = title;
+
+  const arrow = document.createElement("div");
+  arrow.textContent = "▾"; // flips to ▸ when collapsed
+  arrow.style.fontSize = "12px";
+
+  header.append(titleEl, arrow);
+
+  const body = document.createElement("div");
+  body.style.display = "flex";
+  body.style.flexDirection = "column";
+  body.style.gap = "6px";
+
+  let collapsed = false;
+  header.addEventListener("click", () => {
+    collapsed = !collapsed;
+    body.style.display = collapsed ? "none" : "flex";
+    arrow.textContent = collapsed ? "▸" : "▾";
+  });
+
+  panel.append(header, body);
+  return { panel, body };
 }
 
 export function makeLegendGlyph(spriteUrl, backgroundColor, borderColor = "white") {
@@ -81,24 +140,16 @@ export function createSliderMarkers({
   deathSprites,
   hitSprites,
 }) {
-  function sliderPercent(time) {
-    // matches the native range input's own min/max mapping ((value - min) / (max - min)) --
-    // the input's min is startTime, not 0 (see visualize.js), so a marker's position has to
-    // account for that same offset or it lands to the right of where the thumb actually sits
-    // at that timestamp.
-    if (!maxTime || maxTime === startTime) return 0;
-    return clamp(((time - startTime) / (maxTime - startTime)) * 100, 0, 100);
-  }
-
-  function markerKey(label, time) {
-    return `${label}:${time}`;
-  }
+  const players = [
+    { label: "C", color: "#d62828", lane: 1, deaths: cupDeath, hits: cupHit },
+    { label: "M", color: "#2563eb", lane: 0, deaths: mugDeath, hits: mugHit },
+  ];
 
   return function setSliderMarkers() {
     const markers = new Map();
 
     function upsertMarker({ t, label, lane, color, kind, sprite, overlaySprite = null }) {
-      const key = markerKey(label, t);
+      const key = `${label}:${t}`;
       const existing = markers.get(key);
       if (!existing) {
         markers.set(key, { t, label, lane, color, kind, sprite, overlaySprite });
@@ -115,27 +166,17 @@ export function createSliderMarkers({
       existing.sprite = sprite;
     }
 
-    if (showDeath()) {
-      for (const point of cupDeath) {
-        if (!point || point[2] == null) continue;
-        upsertMarker({ t: point[2], label: "C", kind: "death", color: "#d62828", sprite: deathSprites.C, lane: 1 });
-      }
-      for (const point of mugDeath) {
-        if (!point || point[2] == null) continue;
-        upsertMarker({ t: point[2], label: "M", kind: "death", color: "#2563eb", sprite: deathSprites.M, lane: 0 });
+    function addMarkers(kind, sprites, pointsOf) {
+      for (const player of players) {
+        for (const point of pointsOf(player)) {
+          if (!point || point[2] == null) continue;
+          upsertMarker({ t: point[2], label: player.label, kind, color: player.color, sprite: sprites[player.label], lane: player.lane });
+        }
       }
     }
 
-    if (showHit()) {
-      for (const point of cupHit) {
-        if (!point || point[2] == null) continue;
-        upsertMarker({ t: point[2], label: "C", kind: "hit", color: "#d62828", sprite: hitSprites.C, lane: 1 });
-      }
-      for (const point of mugHit) {
-        if (!point || point[2] == null) continue;
-        upsertMarker({ t: point[2], label: "M", kind: "hit", color: "#2563eb", sprite: hitSprites.M, lane: 0 });
-      }
-    }
+    if (showDeath()) addMarkers("death", deathSprites, (player) => player.deaths);
+    if (showHit()) addMarkers("hit", hitSprites, (player) => player.hits);
 
     const markerList = Array.from(markers.values()).sort((left, right) => left.t - right.t);
     sliderMarkers.replaceChildren();
@@ -143,7 +184,7 @@ export function createSliderMarkers({
     for (const marker of markerList) {
       const glyph = document.createElement("div");
       glyph.style.position = "absolute";
-      glyph.style.left = `${sliderPercent(marker.t)}%`;
+      glyph.style.left = `${sliderPercent(marker.t, startTime, maxTime)}%`;
       glyph.style.top = marker.lane === 0 ? "-2px" : "14px";
       glyph.style.width = "16px";
       glyph.style.height = "16px";
@@ -189,18 +230,13 @@ export function createSliderMarkers({
 // start) directly onto the given absolutely-positioned layer. Static once drawn -- unlike death
 // /hit markers, boundaries don't depend on currentTime, so callers only need to run this once.
 export function drawStageBoundaryMarkers({ layer, startTime, maxTime, stageStarts, stageNames = [] }) {
-  function sliderPercent(time) {
-    if (!maxTime || maxTime === startTime) return 0;
-    return clamp(((time - startTime) / (maxTime - startTime)) * 100, 0, 100);
-  }
-
   layer.replaceChildren();
   for (let i = 1; i < stageStarts.length; i++) {
     const t = stageStarts[i];
     if (t == null) continue;
     const line = document.createElement("div");
     line.style.position = "absolute";
-    line.style.left = `${sliderPercent(t)}%`;
+    line.style.left = `${sliderPercent(t, startTime, maxTime)}%`;
     line.style.top = "0";
     line.style.bottom = "0";
     line.style.width = "2px";

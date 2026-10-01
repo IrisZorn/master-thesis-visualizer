@@ -1,5 +1,11 @@
 import * as d3 from "d3";
-import { clamp, getLastTimedPoint, pointAtFraction, validTimedPoints } from "./viewer-helpers.js";
+import { clamp, fadeOpacity, getLastTimedPoint, pointAtFraction, stageIndexAt, validTimedPoints } from "./viewer-helpers.js";
+
+// live (currently detected) enemies are drawn in turquoise; inactive ones in a grey that fades out
+const ACTIVE_ENEMY_COLOR = "rgba(64, 224, 208, 0.9)";
+function inactiveEnemyColor(alpha) {
+  return `rgba(148, 163, 184, ${alpha.toFixed(2)})`;
+}
 
 export function getEnemyGlyphSource(enemyType, enemySprites, spriteUrls, fallbackKey) {
   return enemySprites[enemyType] || spriteUrls[fallbackKey] || spriteUrls.cupHit;
@@ -60,32 +66,13 @@ export function createEnemyVisualBuilder({
     if (!ref || last[0] == null || ref[0] == null) return 0;
     return last[0] - ref[0];
   }
-  // highest stage index whose start has passed, or null on a level with no stages (stageStarts
-  // empty) -- stage 0's start is always defined (the run's own stable start), so this is only
-  // null before any stage data exists at all.
-  function currentStageIndex() {
-    if (!stageStarts.length) return null;
-    const time = currentTimeProvider();
-    let index = null;
-    for (let i = 0; i < stageStarts.length; i++) {
-      const t = stageStarts[i];
-      if (t != null && t <= time) index = i;
-    }
-    return index;
-  }
-
   // shared by full-path-instances and stationary matching: an instance is "active" only while
   // we're still within its matched live track's last known detection -- no fade-out grace
   // period, so it greys out the instant tracking stops, not windowDelta later.
-  function getLastDetectionPoint(liveTrack, minClusterSize) {
+  function getLastDetectionTime(liveTrack, minClusterSize) {
     const liveTrackPoints = liveTrack ? validTimedPoints(liveTrack) : [];
     if (liveTrackPoints.length < minClusterSize) return null;
-    return liveTrackPoints[liveTrackPoints.length - 1];
-  }
-
-  function getLastDetectionTime(liveTrack, minClusterSize) {
-    const lastDetection = getLastDetectionPoint(liveTrack, minClusterSize);
-    return lastDetection ? lastDetection[2] : null;
+    return liveTrackPoints[liveTrackPoints.length - 1][2];
   }
 
   function isInstanceActive(liveTrack, minClusterSize) {
@@ -127,7 +114,7 @@ export function createEnemyVisualBuilder({
   }
 
   function filterRecentPoints(points, minClusterSize = 2) {
-    // never includes a point currentTime hasn't reached yet -- see segmentOpacity/buildFadedTrailSegments below for the matching backward-only fade.
+    // never includes a point currentTime hasn't reached yet -- see buildFadedTrailSegments below for the matching backward-only fade.
     const validPoints = validTimedPoints(points).filter((point) => point[2] <= currentTimeProvider());
     if (validPoints.length < minClusterSize) return [];
     return validPoints;
@@ -136,12 +123,6 @@ export function createEnemyVisualBuilder({
   // Fade each segment by distance from currentTime, same as the player's trail (makeSegments
   // in visualize.js), instead of drawing the whole track at constant opacity: these enemies
   // (e.g. daisy/blueberry) roam freely and their full history would otherwise clutter the map.
-  function segmentOpacity(t1, t2) {
-    const dist = currentTimeProvider() - (t1 + t2) / 2;
-    if (dist < 0) return 0;
-    return clamp(1 - dist / windowDelta, 0, 1);
-  }
-
   function buildFadedTrailSegments(points, idPrefix, color, width) {
     const time = currentTimeProvider();
     const start = time - windowDelta;
@@ -156,7 +137,7 @@ export function createEnemyVisualBuilder({
       const t2 = b[2];
       if (t1 == null || t2 == null) continue;
 
-      const segment = { id: `${idPrefix}-${i - 1}`, points: [[a[0], a[1]], [b[0], b[1]]], stroke: color, width, opacity: segmentOpacity(t1, t2) };
+      const segment = { id: `${idPrefix}-${i - 1}`, points: [[a[0], a[1]], [b[0], b[1]]], stroke: color, width, opacity: fadeOpacity(currentTimeProvider(), (t1 + t2) / 2, windowDelta) };
       if (!fallbackSegment) fallbackSegment = segment;
       if (Math.max(t1, t2) < start) continue;
       if (Math.min(t1, t2) > time) continue;
@@ -206,6 +187,32 @@ export function createEnemyVisualBuilder({
     }
 
     return matches;
+  }
+
+  // fixed-axis enemies are matched along x (a fixed-vertical patrol, e.g. toothy/wally) unless
+  // listed as fixed-horizontal (e.g. injured_wally, which patrols side to side along a fixed
+  // height instead).
+  function liveTracksByInstance(enemyType, liveTracks, instances) {
+    return matchLiveTracksToInstances(liveTracks, instances, fixedHorizontalEnemyTypes.has(enemyType) ? 1 : 0);
+  }
+
+  // match by 2D distance to the anchor rather than a single axis: unlike the fixed-axis enemies,
+  // stationary anchors aren't confined to a shared column/row, so two different shrooms/tulips
+  // can sit at similar x but very different y.
+  function findStationaryLiveTrack(liveTracks, anchorX, anchorY) {
+    return liveTracks.find((track) => {
+      const validPoints = (track || []).filter((point) => point && Number.isFinite(point[0]) && Number.isFinite(point[1]));
+      if (!validPoints.length) return false;
+      const meanX = d3.mean(validPoints, (point) => point[0]);
+      const meanY = d3.mean(validPoints, (point) => point[1]);
+      return Math.hypot(meanX - anchorX, meanY - anchorY) <= stationaryInstanceThreshold;
+    });
+  }
+
+  // roaming enemies drawn from their own per-run tracks -- every type not already drawn by the
+  // stationary/full-path-instances branches or chained as a minimizing enemy
+  function isFreeTrackType(type) {
+    return !stationaryEnemyTypes.has(type) && !centeredGlyphEnemyTypes.has(type) && !minimizingEnemyTypes.has(type);
   }
 
   // Minimizing enemies (Forest Follies' Blueberry): unlike other roaming enemies (daisy/acorn),
@@ -273,16 +280,13 @@ export function createEnemyVisualBuilder({
         // Types absent from enemyStageIndex (e.g. Forest Follies' spiky_bulb/toothy, which has no
         // stages at all) are never restricted here.
         const requiredStage = enemyStageIndex[enemyType];
-        if (requiredStage != null && stageStarts.length && requiredStage !== currentStageIndex()) {
+        if (requiredStage != null && stageStarts.length && requiredStage !== stageIndexAt(stageStarts, currentTimeProvider())) {
           continue;
         }
 
-        // fixed axis is x (a fixed-vertical patrol, e.g. toothy/wally) unless this type is
-        // listed as fixed-horizontal (e.g. injured_wally, which patrols side to side along a
-        // fixed height instead).
         const isFixedHorizontal = fixedHorizontalEnemyTypes.has(enemyType);
         const fixedIndex = isFixedHorizontal ? 1 : 0;
-        const liveTrackByInstance = matchLiveTracksToInstances(liveTracks, aggregate.instances, fixedIndex);
+        const liveTrackByInstance = liveTracksByInstance(enemyType, liveTracks, aggregate.instances);
         for (const [index, instance] of aggregate.instances.entries()) {
           if (!Array.isArray(instance.path) || instance.path.length < 2) continue;
 
@@ -298,8 +302,8 @@ export function createEnemyVisualBuilder({
           const detectedNow = liveTrack ? pointAtCurrentTime(liveTrack) != null : false;
           const instanceIsActive = detectedNow || neverFadeEnemyTypes.has(enemyType);
           const visibility = instanceVisibility(lastDetection);
-          const instanceStroke = instanceIsActive ? "rgba(64, 224, 208, 0.9)" : `rgba(148, 163, 184, ${(0.9 * visibility).toFixed(2)})`;
-          const instanceFill = instanceIsActive ? "rgba(64, 224, 208, 0.9)" : `rgba(148, 163, 184, ${(0.8 * visibility).toFixed(2)})`;
+          const instanceStroke = instanceIsActive ? ACTIVE_ENEMY_COLOR : inactiveEnemyColor(0.9 * visibility);
+          const instanceFill = instanceIsActive ? ACTIVE_ENEMY_COLOR : inactiveEnemyColor(0.8 * visibility);
 
           visuals.paths.push({ id: `enemy-fullpath-${instance.id}`, points: instance.path, stroke: instanceStroke, width: 12, glow: true });
           // undetected right now -> draw it at the end of its patrol path (fraction 1), where
@@ -319,20 +323,8 @@ export function createEnemyVisualBuilder({
 
       if (aggregate.mode === "stationary") {
         for (const [index, anchor] of (aggregate.anchors || []).entries()) {
-          const anchorX = anchor[0];
-          const anchorY = anchor[1];
-
-          // match by 2D distance to the anchor rather than a single axis: unlike the
-          // fixed-axis enemies above, stationary anchors aren't confined to a shared
-          // column/row, so two different shrooms/tulips can sit at similar x but very
-          // different y.
-          const liveTrack = liveTracks.find((track) => {
-            const validPoints = (track || []).filter((point) => point && Number.isFinite(point[0]) && Number.isFinite(point[1]));
-            if (!validPoints.length) return false;
-            const meanX = d3.mean(validPoints, (point) => point[0]);
-            const meanY = d3.mean(validPoints, (point) => point[1]);
-            return Math.hypot(meanX - anchorX, meanY - anchorY) <= stationaryInstanceThreshold;
-          });
+          const [anchorX, anchorY] = anchor;
+          const liveTrack = findStationaryLiveTrack(liveTracks, anchorX, anchorY);
           const lastDetection = getLastDetectionTime(liveTrack, 3);
           const instanceIsActive = isInstanceActive(liveTrack, 3);
           // a dead enemy still greys out right away, but its fade is held off until the last of
@@ -345,7 +337,7 @@ export function createEnemyVisualBuilder({
             }
           }
           const visibility = instanceVisibility(fadeStart);
-          const instanceFill = instanceIsActive ? "rgba(64, 224, 208, 0.9)" : `rgba(148, 163, 184, ${(0.8 * visibility).toFixed(2)})`;
+          const instanceFill = instanceIsActive ? ACTIVE_ENEMY_COLOR : inactiveEnemyColor(0.8 * visibility);
 
           visuals.stationary.push({ id: `enemy-stationary-${enemyType}-${index}`, type: enemyType, x: anchorX, y: anchorY, color: instanceFill, active: instanceIsActive });
           visuals.glyphs.push({ id: `enemy-glyph-${enemyType}-${index}`, type: enemyType, x: anchorX, y: anchorY, color: instanceFill, opacity: instanceIsActive ? 1 : visibility });
@@ -354,7 +346,7 @@ export function createEnemyVisualBuilder({
     }
 
     for (const track of enemyPaths) {
-      if (stationaryEnemyTypes.has(track.type) || centeredGlyphEnemyTypes.has(track.type) || minimizingEnemyTypes.has(track.type)) continue;
+      if (!isFreeTrackType(track.type)) continue;
       const points = filterRecentPoints(track.points, 2);
 
       if (points.length > 1) {
@@ -371,7 +363,7 @@ export function createEnemyVisualBuilder({
           if (last && isLeavingMapEdge(last.point[0], last.dx)) continue;
         }
         const visibility = instanceVisibility(lastDetection);
-        const trackColor = trackIsActive ? "rgba(64, 224, 208, 0.9)" : `rgba(148, 163, 184, ${(0.9 * visibility).toFixed(2)})`;
+        const trackColor = trackIsActive ? ACTIVE_ENEMY_COLOR : inactiveEnemyColor(0.9 * visibility);
         visuals.paths.push(...buildFadedTrailSegments(points, `enemy-free-${track.id}`, trackColor, 8));
         const glyphPoint = getLastTimedPoint(points);
         if (glyphPoint) visuals.glyphs.push({ id: `enemy-glyph-live-${track.id}`, type: track.type, x: glyphPoint[0], y: glyphPoint[1], color: trackColor, label: track.index, opacity: trackIsActive ? 1 : visibility });
@@ -388,7 +380,7 @@ export function createEnemyVisualBuilder({
       }
 
       const visibility = instanceVisibility(state.lastDetection);
-      const chainColor = state.active ? "rgba(64, 224, 208, 0.9)" : `rgba(148, 163, 184, ${(0.9 * visibility).toFixed(2)})`;
+      const chainColor = state.active ? ACTIVE_ENEMY_COLOR : inactiveEnemyColor(0.9 * visibility);
       visuals.paths.push(...buildFadedTrailSegments(state.points, `enemy-free-${chain.id}`, chainColor, 8));
       const glyphPoint = getLastTimedPoint(state.points);
       if (glyphPoint) visuals.glyphs.push({ id: `enemy-glyph-live-${chain.id}`, type: chain.type, x: glyphPoint[0], y: glyphPoint[1], color: chainColor, label: chain.index, opacity: state.active ? 1 : visibility });
@@ -423,9 +415,7 @@ export function createEnemyVisualBuilder({
       const liveTracks = enemyPathsByType[enemyType] || [];
 
       if (aggregate.mode === "full-path-instances" && Array.isArray(aggregate.instances)) {
-        const isFixedHorizontal = fixedHorizontalEnemyTypes.has(enemyType);
-        const fixedIndex = isFixedHorizontal ? 1 : 0;
-        const liveTrackByInstance = matchLiveTracksToInstances(liveTracks, aggregate.instances, fixedIndex);
+        const liveTrackByInstance = liveTracksByInstance(enemyType, liveTracks, aggregate.instances);
         for (const [index] of aggregate.instances.entries()) {
           const liveTrack = liveTrackByInstance.get(index) || null;
           const last = getLastDetectionWithDirection(liveTrack, 2);
@@ -435,16 +425,8 @@ export function createEnemyVisualBuilder({
       }
 
       if (aggregate.mode === "stationary") {
-        for (const anchor of aggregate.anchors || []) {
-          const anchorX = anchor[0];
-          const anchorY = anchor[1];
-          const liveTrack = liveTracks.find((track) => {
-            const validPoints = (track || []).filter((point) => point && Number.isFinite(point[0]) && Number.isFinite(point[1]));
-            if (!validPoints.length) return false;
-            const meanX = d3.mean(validPoints, (point) => point[0]);
-            const meanY = d3.mean(validPoints, (point) => point[1]);
-            return Math.hypot(meanX - anchorX, meanY - anchorY) <= stationaryInstanceThreshold;
-          });
+        for (const [anchorX, anchorY] of aggregate.anchors || []) {
+          const liveTrack = findStationaryLiveTrack(liveTracks, anchorX, anchorY);
           const last = getLastDetectionWithDirection(liveTrack, 3);
           if (last && !isLeavingMapEdge(last.point[0], last.dx)) events.push({ timestamp: last.point[2], x: last.point[0], type: enemyType });
         }
@@ -452,8 +434,7 @@ export function createEnemyVisualBuilder({
     }
 
     for (const track of enemyPaths) {
-      if (neverFadeEnemyTypes.has(track.type)) continue;
-      if (stationaryEnemyTypes.has(track.type) || centeredGlyphEnemyTypes.has(track.type) || minimizingEnemyTypes.has(track.type)) continue;
+      if (neverFadeEnemyTypes.has(track.type) || !isFreeTrackType(track.type)) continue;
       const last = getLastDetectionWithDirection(track.points, 2);
       if (last && !isLeavingMapEdge(last.point[0], last.dx)) events.push({ timestamp: last.point[2], x: last.point[0], type: track.type });
     }

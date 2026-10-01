@@ -1,12 +1,10 @@
 import math
 import pickle
-from pathlib import Path
 from statistics import median
 
-import constants_forest_follies
-import constants_wally_warbles
 from coords_transform import aggregate_data_path, build_enemy_paths, enemy_full_paths_path, transform_run
 from helper import distance, cluster_points_by_distance
+from levels import LEVELS, RESOURCES_DIR, agg_play_data_dir, play_data_dir
 
 # same threshold visualize.js's aggregateVerticalEnemyTracks already uses to
 # tell separate instances of these enemy types apart on-screen -- shared by both fixed-vertical
@@ -41,19 +39,10 @@ ENEMY_DENSITY_INCLUDES_STATIONARY = True
 # that enemy actually renders at (e.g. acorn_machine's 420x550 box spreads much further than
 # spiky_bulb's 80x80), rather than every enemy counting as a single pixel-sized point regardless
 # of size. One sprites subfolder per level, so the path is built from the level module.
-SPRITES_DIR = Path(__file__).parent / "resources/sprites"
+SPRITES_DIR = RESOURCES_DIR / "sprites"
 # fallback for a type sprite_sizes.txt doesn't cover (shouldn't happen -- it lists every type in
 # ENEMY_KEYS -- but keeps a missing entry from crashing the build rather than spreading it)
 DEFAULT_OCCUPANCY_RADIUS_CELLS = 0
-
-# every level this script rebuilds caches for, paired with the play data its enemy instances are
-# built from and the play data its aggregate (player route + heatmap) is built from. Add a level's
-# constants module here once its recordings exist; one run refreshes all of them.
-RESOURCES_DIR = Path(__file__).parent / "resources"
-LEVELS = [
-    (constants_forest_follies, RESOURCES_DIR / "play_data/forest_follies", RESOURCES_DIR / "agg_play_data/forest_follies"),
-    (constants_wally_warbles, RESOURCES_DIR / "play_data/wally_warbles", RESOURCES_DIR / "agg_play_data/wally_warbles"),
-]
 
 
 def find_nearest_instance(instances, distance_to, threshold):
@@ -119,13 +108,10 @@ def update_from_pkl(known_paths, pkl_path, level):
         point_dict = pickle.load(f)
 
     for run in point_dict:
-        for enemy_type in level.FIXED_VERTICAL_ENEMIES:
-            for points in build_enemy_paths(run.get(enemy_type) or []):
-                merge_track_into_instances(known_paths[enemy_type], points, fixed_axis="x")
-
-        for enemy_type in level.FIXED_HORIZONTAL_ENEMIES:
-            for points in build_enemy_paths(run.get(enemy_type) or []):
-                merge_track_into_instances(known_paths[enemy_type], points, fixed_axis="y")
+        for enemy_types, fixed_axis in ((level.FIXED_VERTICAL_ENEMIES, "x"), (level.FIXED_HORIZONTAL_ENEMIES, "y")):
+            for enemy_type in enemy_types:
+                for points in build_enemy_paths(run.get(enemy_type) or []):
+                    merge_track_into_instances(known_paths[enemy_type], points, fixed_axis=fixed_axis)
 
         for enemy_type in level.STATIONARY_ENEMIES:
             merge_stationary_points_into_instances(known_paths[enemy_type], run.get(enemy_type) or [])
@@ -231,24 +217,14 @@ def valid_points(points):
 
 
 def aggregate_spatial_path(paths, distance_threshold=120):
-    all_points = [point for path in paths for point in valid_points(path)]
-    if not all_points:
-        return []
-
-    clusters = cluster_points_by_distance(all_points, distance_threshold=distance_threshold)
-    aggregated = []
-
-    for cluster in clusters:
-        if not cluster:
-            continue
-        aggregated.append((
-            median(point[0] for point in cluster),
-            median(point[1] for point in cluster),
-            len(cluster),
-        ))
-
-    aggregated.sort(key=lambda point: point[0])
-    return [(point[0], point[1], index) for index, point in enumerate(aggregated)]
+    # cluster_points_by_distance already skips None-marker points
+    all_points = [point for path in paths for point in path]
+    aggregated = sorted(
+        ((median(point[0] for point in cluster), median(point[1] for point in cluster))
+         for cluster in cluster_points_by_distance(all_points, distance_threshold=distance_threshold)),
+        key=lambda point: point[0],
+    )
+    return [(x, y, index) for index, (x, y) in enumerate(aggregated)]
 
 
 def aggregate_enemy_density(all_runs, level, cell_size=ENEMY_DENSITY_CELL_SIZE):
@@ -397,8 +373,8 @@ def write_pickle(path, data):
 
 
 if __name__ == "__main__":
-    for level, source_dir, agg_dir in LEVELS:
-        known_paths = build_known_paths(level, source_dir)
+    for level in LEVELS.values():
+        known_paths = build_known_paths(level, play_data_dir(level))
 
         output_path = enemy_full_paths_path(level)
         write_pickle(output_path, {"enemies": known_paths})
@@ -408,6 +384,6 @@ if __name__ == "__main__":
 
         # after the enemy instances above are on disk, since transform_run reads them
         aggregate_path = aggregate_data_path(level)
-        write_pickle(aggregate_path, build_aggregate(level, agg_dir))
+        write_pickle(aggregate_path, build_aggregate(level, agg_play_data_dir(level)))
 
         print(f"{level.LEVEL} -> {aggregate_path}")

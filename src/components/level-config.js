@@ -1,35 +1,24 @@
 // Generic level-config plumbing shared by every level. The actual per-level data (type codes,
-// enemy behaviour sets) lives in level-config-<level>.js modules -- this file only knows how to
-// merge a base config with overrides and turn array fields into the Sets the viewer expects.
+// enemy behaviour sets) lives in level-config-<level>.js modules -- this file only turns their
+// array fields into the Sets the viewer expects.
 
-export function createLevelConfig(baseConfig, overrides = {}) {
-  return {
-    ...baseConfig,
-    ...overrides,
-    playerTypes: {
-      ...baseConfig.playerTypes,
-      ...(overrides.playerTypes || {}),
-    },
-    enemyGlyphSources: {
-      ...baseConfig.enemyGlyphSources,
-      ...(overrides.enemyGlyphSources || {}),
-    },
-    enemyNameToType: {
-      ...baseConfig.enemyNameToType,
-      ...(overrides.enemyNameToType || {}),
-    },
-    stationaryEnemyTypes: new Set(overrides.stationaryEnemyTypes || baseConfig.stationaryEnemyTypes),
-    // full-path-instance enemies whose fixed axis is y instead of the default x (e.g. Wally
-    // Warbles' injured_wally, which patrols side to side along a fixed height rather than up
-    // and down a fixed column) -- matches constants_<level>.py's FIXED_HORIZONTAL_ENEMIES.
-    fixedHorizontalEnemyTypes: new Set(overrides.fixedHorizontalEnemyTypes || baseConfig.fixedHorizontalEnemyTypes),
-    centeredGlyphEnemyTypes: new Set(overrides.centeredGlyphEnemyTypes || baseConfig.centeredGlyphEnemyTypes),
-    minimizingEnemyTypes: new Set(overrides.minimizingEnemyTypes || baseConfig.minimizingEnemyTypes),
-    neverFadeEnemyTypes: new Set(overrides.neverFadeEnemyTypes || baseConfig.neverFadeEnemyTypes),
-    holdLastPositionEnemyTypes: new Set(overrides.holdLastPositionEnemyTypes || baseConfig.holdLastPositionEnemyTypes),
-    countableEnemyTypes: new Set(overrides.countableEnemyTypes || baseConfig.countableEnemyTypes),
-    enemyLegendSpriteKey: overrides.enemyLegendSpriteKey ?? baseConfig.enemyLegendSpriteKey,
-  };
+// fixedHorizontalEnemyTypes: full-path-instance enemies whose fixed axis is y instead of the
+// default x (e.g. Wally Warbles' injured_wally, which patrols side to side along a fixed height
+// rather than up and down a fixed column) -- matches constants_<level>.py's FIXED_HORIZONTAL_ENEMIES.
+const SET_FIELDS = [
+  "stationaryEnemyTypes",
+  "fixedHorizontalEnemyTypes",
+  "centeredGlyphEnemyTypes",
+  "minimizingEnemyTypes",
+  "neverFadeEnemyTypes",
+  "holdLastPositionEnemyTypes",
+  "countableEnemyTypes",
+];
+
+export function createLevelConfig(baseConfig) {
+  const config = { ...baseConfig };
+  for (const field of SET_FIELDS) config[field] = new Set(baseConfig[field]);
+  return config;
 }
 
 export function parseEnemySizes(text, enemyNameToType) {

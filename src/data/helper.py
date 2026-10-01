@@ -94,7 +94,6 @@ def filter_points(points, ghost_points, hit_points, max_dist=200, big_dist=700, 
             for j in range(i, i + recovery_points - 1):
                 if distance(points[j], points[j + 1]) > max_dist:
                     stable = False
-                    #filtered.append((None, None, points[j][2] - 1))
                     break
 
             if stable:

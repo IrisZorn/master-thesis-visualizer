@@ -2,9 +2,8 @@ import argparse
 import json
 import pickle
 
-import constants_forest_follies
-import constants_wally_warbles
 from coords_transform import aggregate_data_path, load_known_enemy_instances
+from levels import LEVELS
 
 # Forest Follies and Wally Warbles' aggregate across playthroughs. Framework calls this once per
 # level (e.g. requesting data/agg_coords_wally_warbles.json runs it with --level=wally_warbles) --
@@ -15,10 +14,6 @@ from coords_transform import aggregate_data_path, load_known_enemy_instances
 # resources/aggregate_data/<level>.pkl -- this only reshapes that cache for the viewer. Rerun
 # build_aggregate_data.py after new recordings or pipeline changes, then `npm run clean`:
 # Framework only invalidates its cache when this file itself changes, not the pkl it reads.
-LEVELS = {
-    "forest_follies": constants_forest_follies,
-    "wally_warbles": constants_wally_warbles,
-}
 
 
 def load_precomputed_enemy_data(level, allowed_types=None):
@@ -28,44 +23,39 @@ def load_precomputed_enemy_data(level, allowed_types=None):
     # own fixed enemy (see build_viewer_aggregate) -- None (the level-wide call) means no restriction.
     known_instances = load_known_enemy_instances(level)
 
+    def allowed(enemy_type):
+        return allowed_types is None or enemy_type in allowed_types
+
+    def sorted_instances(enemy_type, axis):
+        return sorted(known_instances.get(enemy_type, []), key=lambda instance: instance[axis])
+
+    def path_instances(enemy_type, axis, endpoints):
+        return {
+            "mode": "full-path-instances",
+            "instances": [
+                {"id": f"{enemy_type}-{index}", "path": endpoints(instance)}
+                for index, instance in enumerate(sorted_instances(enemy_type, axis))
+            ],
+        }
+
     data = {}
-    for enemy_type in sorted(level.FIXED_VERTICAL_ENEMIES):
-        if allowed_types is not None and enemy_type not in allowed_types:
-            continue
-        instances = sorted(known_instances.get(enemy_type, []), key=lambda instance: instance["x"])
-        data[enemy_type] = {
-            "mode": "full-path-instances",
-            "instances": [
-                {
-                    "id": f"{enemy_type}-{index}",
-                    "path": [(instance["x"], instance["y_min"], 0), (instance["x"], instance["y_max"], 1)],
-                }
-                for index, instance in enumerate(instances)
-            ],
-        }
+    for enemy_type in filter(allowed, sorted(level.FIXED_VERTICAL_ENEMIES)):
+        data[enemy_type] = path_instances(
+            enemy_type, "x", lambda instance: [(instance["x"], instance["y_min"], 0), (instance["x"], instance["y_max"], 1)]
+        )
 
-    for enemy_type in sorted(level.FIXED_HORIZONTAL_ENEMIES):
-        if allowed_types is not None and enemy_type not in allowed_types:
-            continue
-        instances = sorted(known_instances.get(enemy_type, []), key=lambda instance: instance["y"])
-        data[enemy_type] = {
-            "mode": "full-path-instances",
-            "instances": [
-                {
-                    "id": f"{enemy_type}-{index}",
-                    "path": [(instance["x_min"], instance["y"], 0), (instance["x_max"], instance["y"], 1)],
-                }
-                for index, instance in enumerate(instances)
-            ],
-        }
+    for enemy_type in filter(allowed, sorted(level.FIXED_HORIZONTAL_ENEMIES)):
+        data[enemy_type] = path_instances(
+            enemy_type, "y", lambda instance: [(instance["x_min"], instance["y"], 0), (instance["x_max"], instance["y"], 1)]
+        )
 
-    for enemy_type in sorted(level.STATIONARY_ENEMIES):
-        if allowed_types is not None and enemy_type not in allowed_types:
-            continue
-        anchors = sorted(known_instances.get(enemy_type, []), key=lambda instance: instance["x"])
+    for enemy_type in filter(allowed, sorted(level.STATIONARY_ENEMIES)):
         data[enemy_type] = {
             "mode": "stationary",
-            "anchors": [(instance["x"], instance["y"], index) for index, instance in enumerate(anchors)],
+            "anchors": [
+                (instance["x"], instance["y"], index)
+                for index, instance in enumerate(sorted_instances(enemy_type, "x"))
+            ],
         }
 
     return data
@@ -113,6 +103,4 @@ def dump_aggregate(level):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--level", required=True, choices=sorted(LEVELS))
-    level_name = parser.parse_args().level
-
-    dump_aggregate(LEVELS[level_name])
+    dump_aggregate(LEVELS[parser.parse_args().level])
