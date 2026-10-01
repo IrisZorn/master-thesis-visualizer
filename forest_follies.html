@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<meta name="generator" content="Observable Framework v1.13.4">
+<title>Forest Follies | Visualizations</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,200..900;1,8..60,200..900&amp;display=swap" crossorigin>
+<link rel="preload" as="style" href="./_observablehq/theme-air.d5b7fcbe.css">
+<link rel="preload" as="style" href="./_observablehq/stdlib/inputs.f7bf0e12.css">
+<link rel="stylesheet" type="text/css" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,200..900;1,8..60,200..900&amp;display=swap" crossorigin>
+<link rel="stylesheet" type="text/css" href="./_observablehq/theme-air.d5b7fcbe.css">
+<link rel="stylesheet" type="text/css" href="./_observablehq/stdlib/inputs.f7bf0e12.css">
+<link rel="modulepreload" href="./_observablehq/client.08e4feb1.js">
+<link rel="modulepreload" href="./_observablehq/runtime.607a8173.js">
+<link rel="modulepreload" href="./_observablehq/stdlib.60afab10.js">
+<link rel="modulepreload" href="./_import/components/visualize.92e9f8ca.js">
+<link rel="modulepreload" href="./_import/components/level-config.d1c252d6.js">
+<link rel="modulepreload" href="./_import/components/level-config-forest-follies.d79e0eb8.js">
+<link rel="modulepreload" href="./_observablehq/stdlib/inputs.07ab08cb.js">
+<link rel="modulepreload" href="./_import/components/viewer-controls.02ef3d38.js">
+<link rel="modulepreload" href="./_import/components/viewer-enemies.43697f16.js">
+<link rel="modulepreload" href="./_import/components/viewer-bullets.337ce04e.js">
+<link rel="modulepreload" href="./_import/components/viewer-heatmap.2ff45294.js">
+<link rel="modulepreload" href="./_import/components/viewer-helpers.d11f403b.js">
+<link rel="modulepreload" href="./_node/d3@7.9.0/index.ca4e4e1f.js">
+<link rel="modulepreload" href="./_npm/htl@1.0.0/11521f02.js">
+<link rel="modulepreload" href="./_npm/isoformat@0.2.1/604cb63b.js">
+<link rel="modulepreload" href="./_node/d3-array@3.2.4/index.bdb0a72c.js">
+<link rel="modulepreload" href="./_node/d3-axis@3.0.0/index.34ded868.js">
+<link rel="modulepreload" href="./_node/d3-brush@3.0.0/index.2a46d490.js">
+<link rel="modulepreload" href="./_node/d3-chord@3.0.1/index.eb7a3f59.js">
+<link rel="modulepreload" href="./_node/d3-color@3.1.0/index.e8c126ff.js">
+<link rel="modulepreload" href="./_node/d3-contour@4.0.2/index.d20458c0.js">
+<link rel="modulepreload" href="./_node/d3-delaunay@6.0.4/index.d22bdd7b.js">
+<link rel="modulepreload" href="./_node/d3-dispatch@3.0.1/index.be49ca5f.js">
+<link rel="modulepreload" href="./_node/d3-drag@3.0.0/index.d3ae5f0f.js">
+<link rel="modulepreload" href="./_node/d3-dsv@3.0.1/index.48418e2e.js">
+<link rel="modulepreload" href="./_node/d3-ease@3.0.1/index.f721fe69.js">
+<link rel="modulepreload" href="./_node/d3-fetch@3.0.1/index.a14b8fa2.js">
+<link rel="modulepreload" href="./_node/d3-force@3.0.0/index.952bd793.js">
+<link rel="modulepreload" href="./_node/d3-format@3.1.2/index.462d0a06.js">
+<link rel="modulepreload" href="./_node/d3-geo@3.1.1/index.ed340730.js">
+<link rel="modulepreload" href="./_node/d3-hierarchy@3.1.2/index.aa2fa671.js">
+<link rel="modulepreload" href="./_node/d3-interpolate@3.0.1/index.e11d2315.js">
+<link rel="modulepreload" href="./_node/d3-path@3.1.0/index.c2b3c473.js">
+<link rel="modulepreload" href="./_node/d3-polygon@3.0.1/index.32c3d834.js">
+<link rel="modulepreload" href="./_node/d3-quadtree@3.0.1/index.e9fed2eb.js">
+<link rel="modulepreload" href="./_node/d3-random@3.0.1/index.0f51cac2.js">
+<link rel="modulepreload" href="./_node/d3-scale@4.0.2/index.d84d3d65.js">
+<link rel="modulepreload" href="./_node/d3-scale-chromatic@3.1.0/index.28c209c1.js">
+<link rel="modulepreload" href="./_node/d3-selection@3.0.0/index.13204b25.js">
+<link rel="modulepreload" href="./_node/d3-shape@3.2.0/index.d124f030.js">
+<link rel="modulepreload" href="./_node/d3-time@3.1.0/index.5e76e4f2.js">
+<link rel="modulepreload" href="./_node/d3-time-format@4.1.0/index.1cef6c56.js">
+<link rel="modulepreload" href="./_node/d3-timer@3.0.1/index.0ee6092b.js">
+<link rel="modulepreload" href="./_node/d3-transition@3.0.1/index.3725eff8.js">
+<link rel="modulepreload" href="./_node/d3-zoom@3.0.0/index.b6a6a5f8.js">
+<link rel="modulepreload" href="./_node/internmap@2.0.3/index.4106013c.js">
+<link rel="modulepreload" href="./_node/delaunator@5.1.0/index.612904e6.js">
+<link rel="modulepreload" href="./_node/robust-predicates@3.0.3/index.a9a3e887.js">
+<link rel="icon" href="./_file/observable.1af93621.png" type="image/png" sizes="32x32">
+<script type="module">
+
+import {define} from "./_observablehq/client.08e4feb1.js";
+import {registerFile} from "./_observablehq/stdlib.60afab10.js";
+
+registerFile("./data/agg_coords_forest_follies.json", {"name":"./data/agg_coords_forest_follies.json","mimeType":"application/json","path":"./_file/data/agg_coords_forest_follies.42719499.json","lastModified":1790856382257,"size":852504});
+registerFile("./data/resources/forest_follies_stitched.png", {"name":"./data/resources/forest_follies_stitched.png","mimeType":"image/png","path":"./_file/data/resources/forest_follies_stitched.5e05c41b.png","lastModified":1768465529422,"size":36935834});
+registerFile("./data/resources/sprites/forest_follies/acorn.png", {"name":"./data/resources/sprites/forest_follies/acorn.png","mimeType":"image/png","path":"./_file/data/resources/sprites/forest_follies/acorn.b6b11518.png","lastModified":1761640147389,"size":18362});
+registerFile("./data/resources/sprites/forest_follies/acorn_machine.png", {"name":"./data/resources/sprites/forest_follies/acorn_machine.png","mimeType":"image/png","path":"./_file/data/resources/sprites/forest_follies/acorn_machine.43779b37.png","lastModified":1761640147099,"size":128644});
+registerFile("./data/resources/sprites/forest_follies/blueberry.png", {"name":"./data/resources/sprites/forest_follies/blueberry.png","mimeType":"image/png","path":"./_file/data/resources/sprites/forest_follies/blueberry.3e980c7b.png","lastModified":1761640147700,"size":11267});
+registerFile("./data/resources/sprites/forest_follies/cuphead.png", {"name":"./data/resources/sprites/forest_follies/cuphead.png","mimeType":"image/png","path":"./_file/data/resources/sprites/forest_follies/cuphead.331438d6.png","lastModified":1761640408235,"size":17914});
+registerFile("./data/resources/sprites/forest_follies/cuphead_ghost.png", {"name":"./data/resources/sprites/forest_follies/cuphead_ghost.png","mimeType":"image/png","path":"./_file/data/resources/sprites/forest_follies/cuphead_ghost.84578355.png","lastModified":1781637900782,"size":36991});
+registerFile("./data/resources/sprites/forest_follies/cuphead_hit.png", {"name":"./data/resources/sprites/forest_follies/cuphead_hit.png","mimeType":"image/png","path":"./_file/data/resources/sprites/forest_follies/cuphead_hit.259296d6.png","lastModified":1781637920232,"size":22897});
+registerFile("./data/resources/sprites/forest_follies/daisy.png", {"name":"./data/resources/sprites/forest_follies/daisy.png","mimeType":"image/png","path":"./_file/data/resources/sprites/forest_follies/daisy.840b85bc.png","lastModified":1761640148342,"size":29759});
+registerFile("./data/resources/sprites/forest_follies/mugman.png", {"name":"./data/resources/sprites/forest_follies/mugman.png","mimeType":"image/png","path":"./_file/data/resources/sprites/forest_follies/mugman.75ffbd47.png","lastModified":1785420475815,"size":21163});
+registerFile("./data/resources/sprites/forest_follies/mugman_ghost.png", {"name":"./data/resources/sprites/forest_follies/mugman_ghost.png","mimeType":"image/png","path":"./_file/data/resources/sprites/forest_follies/mugman_ghost.7efc190c.png","lastModified":1781637936344,"size":35486});
+registerFile("./data/resources/sprites/forest_follies/mugman_hit.png", {"name":"./data/resources/sprites/forest_follies/mugman_hit.png","mimeType":"image/png","path":"./_file/data/resources/sprites/forest_follies/mugman_hit.5dc3737c.png","lastModified":1781637949528,"size":22105});
+registerFile("./data/resources/sprites/forest_follies/shroom.png", {"name":"./data/resources/sprites/forest_follies/shroom.png","mimeType":"image/png","path":"./_file/data/resources/sprites/forest_follies/shroom.edfbc5e7.png","lastModified":1761640148722,"size":10440});
+registerFile("./data/resources/sprites/forest_follies/spiky_bulb.png", {"name":"./data/resources/sprites/forest_follies/spiky_bulb.png","mimeType":"image/png","path":"./_file/data/resources/sprites/forest_follies/spiky_bulb.c6eaf561.png","lastModified":1761640149328,"size":8788});
+registerFile("./data/resources/sprites/forest_follies/sprite_sizes.txt", {"name":"./data/resources/sprites/forest_follies/sprite_sizes.txt","mimeType":"text/plain","path":"./_file/data/resources/sprites/forest_follies/sprite_sizes.fa879750.txt","lastModified":1790781824827,"size":396});
+registerFile("./data/resources/sprites/forest_follies/toothy.png", {"name":"./data/resources/sprites/forest_follies/toothy.png","mimeType":"image/png","path":"./_file/data/resources/sprites/forest_follies/toothy.f88d5832.png","lastModified":1761640149898,"size":37910});
+registerFile("./data/resources/sprites/forest_follies/tulip.png", {"name":"./data/resources/sprites/forest_follies/tulip.png","mimeType":"image/png","path":"./_file/data/resources/sprites/forest_follies/tulip.80c330ee.png","lastModified":1761640149608,"size":20674});
+registerFile("./data/resources/sprites/forest_follies/tulip_bullet.png", {"name":"./data/resources/sprites/forest_follies/tulip_bullet.png","mimeType":"image/png","path":"./_file/data/resources/sprites/forest_follies/tulip_bullet.4d6be987.png","lastModified":1790697922427,"size":4215});
+registerFile("./data/run_coords_forest_follies.json", {"name":"./data/run_coords_forest_follies.json","mimeType":"application/json","path":"./_file/data/run_coords_forest_follies.302f9942.json","lastModified":1790856383205,"size":2681540});
+
+define({id: "56b0148e", inputs: ["FileAttachment"], outputs: ["createMapViewer","createLevelConfig","FOREST_FOLLIES_LEVEL_CONFIG","aggr_players","mapUrl","enemySizesText","spriteUrls"], body: async (FileAttachment) => {
+const [{createMapViewer}, {createLevelConfig}, {FOREST_FOLLIES_LEVEL_CONFIG}] = await Promise.all([import("./_import/components/visualize.92e9f8ca.js"), import("./_import/components/level-config.d1c252d6.js"), import("./_import/components/level-config-forest-follies.d79e0eb8.js")]);
+
+// aggregate across every playthrough (see data/agg_coords_[level].json.py)
+const aggr_players = await FileAttachment("./data/agg_coords_forest_follies.json").json();
+
+const mapUrl = await FileAttachment("./data/resources/forest_follies_stitched.png").url();
+const enemySizesText = await FileAttachment("./data/resources/sprites/forest_follies/sprite_sizes.txt").text();
+const spriteUrls = {
+	cup: await FileAttachment("./data/resources/sprites/forest_follies/cuphead.png").url(),
+	mug: await FileAttachment("./data/resources/sprites/forest_follies/mugman.png").url(),
+	cupDeath: await FileAttachment("./data/resources/sprites/forest_follies/cuphead_ghost.png").url(),
+	mugDeath: await FileAttachment("./data/resources/sprites/forest_follies/mugman_ghost.png").url(),
+	cupHit: await FileAttachment("./data/resources/sprites/forest_follies/cuphead_hit.png").url(),
+	mugHit: await FileAttachment("./data/resources/sprites/forest_follies/mugman_hit.png").url(),
+	shroom: await FileAttachment("./data/resources/sprites/forest_follies/shroom.png").url(),
+	spikyBulb: await FileAttachment("./data/resources/sprites/forest_follies/spiky_bulb.png").url(),
+	toothy: await FileAttachment("./data/resources/sprites/forest_follies/toothy.png").url(),
+	tulip: await FileAttachment("./data/resources/sprites/forest_follies/tulip.png").url(),
+	daisy: await FileAttachment("./data/resources/sprites/forest_follies/daisy.png").url(),
+	blueberry: await FileAttachment("./data/resources/sprites/forest_follies/blueberry.png").url(),
+	acorn: await FileAttachment("./data/resources/sprites/forest_follies/acorn.png").url(),
+	acornMachine: await FileAttachment("./data/resources/sprites/forest_follies/acorn_machine.png").url(),
+	tulipBullet: await FileAttachment("./data/resources/sprites/forest_follies/tulip_bullet.png").url()
+};
+return {createMapViewer,createLevelConfig,FOREST_FOLLIES_LEVEL_CONFIG,aggr_players,mapUrl,enemySizesText,spriteUrls};
+}});
+
+define({id: "c3e4f6a1", inputs: ["FileAttachment","Inputs","display","Generators"], outputs: ["playthroughsByFile","playthroughNames","playthroughSelect","selectedPlaythrough"], body: async (FileAttachment,Inputs,display,Generators) => {
+// All playthroughs from data/resources/play_data/*.pkl, keyed by filename stem
+// (see data/run_coords_[level].json.py). Loaded once on page load.
+const playthroughsByFile = await FileAttachment("./data/run_coords_forest_follies.json").json();
+const playthroughNames = Object.keys(playthroughsByFile);
+
+const playthroughSelect = Inputs.select(playthroughNames, {label: "Select Playthrough", value: playthroughNames[0]});
+display(playthroughSelect);
+
+const selectedPlaythrough = Generators.input(playthroughSelect);
+return {playthroughsByFile,playthroughNames,playthroughSelect,selectedPlaythrough};
+}});
+
+define({id: "13ae3e21", inputs: ["playthroughsByFile","selectedPlaythrough","Inputs","display","Generators"], outputs: ["runOptions","runSelect","selectedRun"], body: (playthroughsByFile,selectedPlaythrough,Inputs,display,Generators) => {
+// Runs within the selected playthrough. Recreated (and reset to "Run 1") whenever
+// selectedPlaythrough changes, since different playthroughs have different run counts.
+const runOptions = playthroughsByFile[selectedPlaythrough].map((_, i) => `Run ${i + 1}`);
+const runSelect = Inputs.select(runOptions, {label: "Select Run", value: runOptions[0]});
+display(runSelect);
+
+const selectedRun = Generators.input(runSelect);
+return {runOptions,runSelect,selectedRun};
+}});
+
+define({id: "2675b45f", inputs: ["selectedRun","createMapViewer","playthroughsByFile","selectedPlaythrough","mapUrl","spriteUrls","enemySizesText","aggr_players","createLevelConfig","FOREST_FOLLIES_LEVEL_CONFIG","display"], outputs: ["runIndex","currentViewer"], body: async (selectedRun,createMapViewer,playthroughsByFile,selectedPlaythrough,mapUrl,spriteUrls,enemySizesText,aggr_players,createLevelConfig,FOREST_FOLLIES_LEVEL_CONFIG,display) => {
+// Create and display the viewer for the selected playthrough/run. Legend and input UI
+// are owned by the viewer itself. Reruns whenever selectedPlaythrough or selectedRun changes.
+const runIndex = Number(selectedRun.replace('Run ', '')) - 1;
+const currentViewer = await createMapViewer({
+	run: playthroughsByFile[selectedPlaythrough][runIndex],
+	totalRuns: playthroughsByFile[selectedPlaythrough].length,
+	mapUrl,
+	spriteUrls,
+	enemySizesText,
+	aggr_players,
+	levelConfig: createLevelConfig(FOREST_FOLLIES_LEVEL_CONFIG)
+});
+
+display(currentViewer);
+return {runIndex,currentViewer};
+}});
+
+</script>
+</head>
+<body>
+<input id="observablehq-sidebar-toggle" type="checkbox" title="Toggle sidebar">
+<label id="observablehq-sidebar-backdrop" for="observablehq-sidebar-toggle"></label>
+<nav id="observablehq-sidebar">
+  <ol>
+    <label id="observablehq-sidebar-close" for="observablehq-sidebar-toggle"></label>
+    <li class="observablehq-link"><a href="./">Visualizations</a></li>
+  </ol>
+  <ol>
+    <li class="observablehq-link observablehq-link-active"><a href="./forest_follies">Forest Follies</a></li>
+    <li class="observablehq-link"><a href="./wally_warbles">Aviary Action</a></li>
+  </ol>
+</nav>
+<script>{const e=document.querySelector("#observablehq-sidebar"),o=document.querySelector("#observablehq-sidebar-toggle"),r=sessionStorage.getItem("observablehq-sidebar");r?o.checked=r==="true":o.indeterminate=!0;for(const t of document.querySelectorAll("#observablehq-sidebar summary")){const s=t.parentElement;switch(sessionStorage.getItem(`observablehq-sidebar:${t.textContent}`)){case"true":s.open=!0;break;case"false":s.classList.contains("observablehq-section-active")||(s.open=!1);break}}addEventListener("beforeunload",()=>sessionStorage.setItem("observablehq-sidebar-scrolly",`${e.scrollTop}`));const a=sessionStorage.getItem("observablehq-sidebar-scrolly");a!=null&&(e.style.cssText="overflow: hidden;",e.scrollTop=+a,e.style.cssText="");}</script>
+<div id="observablehq-center">
+<aside id="observablehq-toc" data-selector="h1:not(:first-of-type)[id], h2:first-child[id], :not(h1) + h2[id]">
+<nav>
+</nav>
+</aside>
+<main id="observablehq-main" class="observablehq">
+<h1 id="two-player-gameplay" tabindex="-1"><a class="observablehq-header-anchor" href="#two-player-gameplay">Two Player Gameplay</a></h1>
+<div class="observablehq observablehq--block"><!--:56b0148e:--></div>
+<div class="observablehq observablehq--block"><!--:c3e4f6a1:--></div>
+<div class="observablehq observablehq--block"><!--:13ae3e21:--></div>
+<div class="observablehq observablehq--block"><!--:2675b45f:--></div>
+</main>
+<footer id="observablehq-footer">
+<nav><a rel="prev" href="./"><span>Visualizations</span></a><a rel="next" href="./wally_warbles"><span>Aviary Action</span></a></nav>
+<div>Built with <a href="https://observablehq.com/" target="_blank" rel="noopener noreferrer">Observable</a> on <a title="2026-10-01T14:06:19">Oct 1, 2026</a>.</div>
+</footer>
+</div>
+</body>
+</html>

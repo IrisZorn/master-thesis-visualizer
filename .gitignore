@@ -1,0 +1,9 @@
+.DS_Store
+/dist/
+node_modules/
+yarn-error.log
+__pycache__/
+*.pyc
+*.mp4
+.idea/
+claude.md

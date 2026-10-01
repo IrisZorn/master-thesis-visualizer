@@ -1,0 +1,16 @@
+# Enemy glyph box size (px), format: name=width,height
+# The sprite image is scaled to fit inside this box without ever being
+# stretched (object-fit: contain), so width and height can be set freely.
+acorn=130,150
+acorn_machine=420,550
+shroom=100,100
+spiky_bulb=80,80
+toothy=210,310
+tulip=120,170
+daisy=140,190
+blueberry=100,120
+tulip_bullet=70,70
+
+#TODO: look at clustering
+
+#TODO: setup server

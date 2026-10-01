@@ -1,0 +1,18 @@
+# Enemy glyph box size (px), format: name=width,height
+# The sprite image is scaled to fit inside this box without ever being
+# stretched (object-fit: contain), so width and height can be set freely.
+# Placeholder defaults -- tune these once the sprites are on screen.
+wally=500,500
+willy=200,250
+injured_wally=1200,500
+nailbird=170,130
+apple=60,60
+egg=60,60
+eggshell=60,60
+fish=60,60
+heart=60,60
+pill=60,60
+pill_half=60,60
+shoe=60,60
+wally_feather=60,60
+willy_egg=60,60
