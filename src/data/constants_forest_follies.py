@@ -1,7 +1,7 @@
 # Everything level-specific lives in this module: the type numbering the detector assigns, which
 # of those numbers are players, and which behaviour category each enemy falls into. The rest of
 # the pipeline (coords_transform.py, run_coords_[level].json.py, agg_coords_[level].json.py,
-# build_enemy_full_paths.py) is level-agnostic and only ever looks a type up by its role here --
+# build_aggregate_data.py) is level-agnostic and only ever looks a type up by its role here --
 # so a new level is a copy of this file with its own numbers and sets.
 
 # names this level's cached enemy data: resources/enemy_full_paths/<LEVEL>.pkl
@@ -35,7 +35,7 @@ tulip_bullet = '18'
 
 # spiky_bulb/toothy only ever move up and down on a fixed path; their true
 # range is only known by combining many playthroughs, so it's maintained
-# separately (see build_enemy_full_paths.py) instead of being recomputed here.
+# separately (see build_aggregate_data.py) instead of being recomputed here.
 FIXED_VERTICAL_ENEMIES = {
     spiky_bulb,
     toothy,
@@ -76,7 +76,7 @@ BULLET_KEYS = {
 }
 
 # tracked like an enemy (in ENEMY_KEYS, so the viewer draws its full path) but still a bullet, so
-# kept out of the enemy density heatmap -- see agg_coords_[level].json.py's aggregate_enemy_density.
+# kept out of the enemy density heatmap -- see build_aggregate_data.py's aggregate_enemy_density.
 HEATMAP_EXCLUDED_ENEMIES = {
     tulip_bullet,
 }

@@ -1,6 +1,6 @@
 # See constants_forest_follies.py for what this module's job is and how the rest of the pipeline
 # (coords_transform.py, run_coords_[level].json.py, agg_coords_[level].json.py,
-# build_enemy_full_paths.py) uses it.
+# build_aggregate_data.py) uses it.
 LEVEL = 'wally_warbles'
 
 # this level's arena is one static 1920x1080 screen (no side-scrolling), so MAP_WIDTH is just the
@@ -72,7 +72,7 @@ STAGES = (
 # wally only ever moves up and down a fixed vertical line, and injured_wally (his stage-3 form)
 # only ever moves side to side along a fixed horizontal line; both patrol ranges are only known
 # by combining many playthroughs, so like Forest Follies' spiky_bulb/toothy they're maintained
-# separately (see build_enemy_full_paths.py) instead of being recomputed here. willy/nailbird and
+# separately (see build_aggregate_data.py) instead of being recomputed here. willy/nailbird and
 # every JUNK pickup roam freely, so they're reconstructed into tracks the generic way (see
 # coords_transform.transform_run's build_enemy_paths branch).
 FIXED_VERTICAL_ENEMIES = {
@@ -103,7 +103,7 @@ LINEAR_BULLET_SPEEDS = {
 
 # which stage (0-based, matching STAGES) each full-path-instance enemy belongs to -- wally is only
 # around for Stage 1, injured_wally only for Stage 3. Used to keep a stage's aggregated "enemies"
-# data (agg_coords_[level].json.py's build_aggregate) and the live viewer's rendering
+# data (agg_coords_[level].json.py's build_viewer_aggregate) and the live viewer's rendering
 # (level-config-wally-warbles.js's enemyStageIndex) limited to the fixed enemy actually active in
 # that stage, instead of showing both patrol lines throughout the whole run. A type absent here
 # (or on a level with no STAGES at all) is never stage-restricted.

@@ -60,7 +60,7 @@ MAX_ENEMY_REACQUIRE_GAP_NEAR_EDGE = 150
 PLAYER_BIG_DIST = 650
 # tracks shorter than this after cleaning are almost always single-frame false
 # detections rather than a real sighting; kept low relative to
-# build_enemy_full_paths.py's MIN_TRACK_POINTS=20 because these enemies roam
+# build_aggregate_data.py's MIN_TRACK_POINTS=20 because these enemies roam
 # freely and can legitimately pass through view in a handful of frames.
 MIN_ENEMY_TRACK_POINTS = 5
 # minimum simultaneous gap (time units) with zero real-position detections from *either* player
@@ -80,7 +80,7 @@ BOTH_PLAYERS_UNDETECTED_GAP = 200
 # label is trusted rather than guessed. 200 is a starting point (~1.4x an enemy's own glyph
 # size) pending a look at real swapped-ghost cases.
 GHOST_SWAP_MARGIN = 200
-# same threshold build_enemy_full_paths.py's X_MATCH_THRESHOLD uses to tell separate instances
+# same threshold build_aggregate_data.py's X_MATCH_THRESHOLD uses to tell separate instances
 # of these enemy types apart -- reused here to assign a raw detection to the known instance it
 # belongs to, along whichever axis is fixed for that enemy (x for fixed-vertical, y for
 # fixed-horizontal).
@@ -101,13 +101,46 @@ BULLET_SHOT_MIN_INLIERS = 6
 BULLET_SHOT_MIN_DT = 5
 BULLET_SHOT_MAX_SPAN = 30
 # one cache file per level, since its keys are bare type numbers and those mean different enemies
-# in different levels. Written by build_enemy_full_paths.py.
+# in different levels. Written by build_aggregate_data.py.
 ENEMY_FULL_PATHS_DIR = Path(__file__).parent / "resources/enemy_full_paths"
+# one per level as well: the pooled player route and enemy heatmap agg_coords_[level].json.py
+# ships, precomputed by build_aggregate_data.py since building them means re-detecting every
+# aggregated run.
+AGGREGATE_DATA_DIR = Path(__file__).parent / "resources/aggregate_data"
+# one per level as well: every play_data recording's bullet paths, precalculated by
+# build_bullet_paths.py since build_bullet_shots is far too slow to rerun on every Framework load.
+PRECALC_BULLET_PATHS_DIR = Path(__file__).parent / "resources/precalc_bullet_paths"
+# a recording counts as single-player once a non-primary player has fewer than 1/COOP_RATIO_THRESHOLD
+# as many detections as the primary one: at that point their "path" is stray false detections on
+# the primary player rather than a second person playing.
+COOP_RATIO_THRESHOLD = 20
 _known_enemy_instances = {}
 
 
 def enemy_full_paths_path(level):
     return ENEMY_FULL_PATHS_DIR / f"{level.LEVEL}.pkl"
+
+
+def aggregate_data_path(level):
+    return AGGREGATE_DATA_DIR / f"{level.LEVEL}.pkl"
+
+
+def precalc_bullet_paths_path(level):
+    return PRECALC_BULLET_PATHS_DIR / f"{level.LEVEL}.pkl"
+
+
+def is_coop_footage(point_dict, level):
+    # shared by run_coords_[level].json.py and build_bullet_paths.py, which must agree on it: it
+    # changes transform_run's run window, and with it which bullet detections get used
+    totals = {
+        player["main"]: sum(len(run.get(player["main"]) or []) for run in point_dict)
+        for player in level.PLAYERS
+    }
+    primary_total = totals[level.PLAYERS[0]["main"]]
+    return all(
+        totals[player["main"]] * COOP_RATIO_THRESHOLD > primary_total
+        for player in level.PLAYERS[1:]
+    )
 
 
 def load_known_enemy_instances(level):
@@ -637,7 +670,7 @@ def stage_start_times(my_dict, level, start_time):
     return starts
 
 
-def transform_run(run, level, is_coop=True, has_next_run=True):
+def transform_run(run, level, is_coop=True, has_next_run=True, bullet_paths=None):
     if not all(run.get(player["main"]) for player in level.PLAYERS):
         return None
 
@@ -740,14 +773,24 @@ def transform_run(run, level, is_coop=True, has_next_run=True):
     # already handles multiple simultaneous instances, which is exactly what concurrent bullets on
     # screen are) -- kept in their own loop since BULLET_KEYS is deliberately separate from
     # ENEMY_KEYS -- see its definition.
-    linear_bullet_speeds = getattr(level, "LINEAR_BULLET_SPEEDS", {})
-    for bullet_type in sorted(bullet_keys):
-        bullet_values = [point for point in (run.get(bullet_type) or []) if in_window(point[2])]
-        if bullet_type in linear_bullet_speeds:
-            min_speed, max_speed = linear_bullet_speeds[bullet_type]
-            my_dict[bullet_type] = build_bullet_shots(bullet_values, min_speed, max_speed)
-        else:
-            my_dict[bullet_type] = build_enemy_paths(bullet_values, player_path=player_paths[0])
+    #
+    # This is by far the slowest part of transform_run (build_bullet_shots' line search), so
+    # callers can skip it: bullet_paths=None computes it here (build_bullet_paths.py, which
+    # precalculates it once), a dict supplies that precalculated result instead
+    # (run_coords_[level].json.py), and an empty dict leaves bullets out entirely (the aggregation,
+    # which never uses them).
+    if bullet_paths is None:
+        linear_bullet_speeds = getattr(level, "LINEAR_BULLET_SPEEDS", {})
+        for bullet_type in sorted(bullet_keys):
+            bullet_values = [point for point in (run.get(bullet_type) or []) if in_window(point[2])]
+            if bullet_type in linear_bullet_speeds:
+                min_speed, max_speed = linear_bullet_speeds[bullet_type]
+                my_dict[bullet_type] = build_bullet_shots(bullet_values, min_speed, max_speed)
+            else:
+                my_dict[bullet_type] = build_enemy_paths(bullet_values, player_path=player_paths[0])
+    else:
+        for bullet_type in sorted(bullet_paths):
+            my_dict[bullet_type] = bullet_paths[bullet_type]
 
     stage_starts = stage_start_times(my_dict, level, start_time)
     if stage_starts is not None:

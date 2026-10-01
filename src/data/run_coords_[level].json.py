@@ -1,37 +1,25 @@
 import argparse
 import json
 import pickle
+import sys
 from pathlib import Path
 
 import constants_forest_follies
 import constants_wally_warbles
-from coords_transform import transform_run
+from coords_transform import is_coop_footage, precalc_bullet_paths_path, transform_run
 
 # Forest Follies and Wally Warbles' per-run coordinates. Framework calls this once per level
 # (e.g. requesting data/run_coords_wally_warbles.json runs it with --level=wally_warbles) -- the
 # loader itself is level-agnostic and only ever looks a level up by name here.
+#
+# Bullet paths come precalculated from build_bullet_paths.py (resources/precalc_bullet_paths/),
+# since reconstructing them is by far the slowest part of transform_run. Rerun that script after
+# new recordings or pipeline changes, then `npm run clean`: Framework only invalidates its cache
+# when this file itself changes, not the pkl it reads.
 LEVELS = {
     "forest_follies": constants_forest_follies,
     "wally_warbles": constants_wally_warbles,
 }
-
-# a recording counts as single-player once a non-primary player has fewer than 1/COOP_RATIO_THRESHOLD
-# as many detections as the primary one: at that point their "path" is stray false detections on
-# the primary player rather than a second person playing.
-COOP_RATIO_THRESHOLD = 20
-
-
-def is_coop_footage(point_dict, level):
-    totals = {
-        player["main"]: sum(len(run.get(player["main"]) or []) for run in point_dict)
-        for player in level.PLAYERS
-    }
-    primary_total = totals[level.PLAYERS[0]["main"]]
-    return all(
-        totals[player["main"]] * COOP_RATIO_THRESHOLD > primary_total
-        for player in level.PLAYERS[1:]
-    )
-
 
 def merge_into_primary_player(runs, level):
     # single-player footage still produces detections for the other characters (the detector
@@ -64,15 +52,31 @@ def merge_into_primary_player(runs, level):
     return merged_runs
 
 
-def load_runs(pkl_path, level):
+def load_precalc_bullet_paths(level):
+    path = precalc_bullet_paths_path(level)
+    if not path.exists():
+        return {}
+    with open(path, "rb") as f:
+        return pickle.load(f)
+
+
+def load_runs(pkl_path, level, precalc_bullet_paths):
     with open(pkl_path, "rb") as f:
         point_dict = pickle.load(f)
 
     is_coop = is_coop_footage(point_dict, level)
 
+    # one entry per run, by index into point_dict. A recording build_bullet_paths.py hasn't seen
+    # yet (or one whose run count no longer matches) falls back to computing its bullets here --
+    # correct, just slow -- with a note on stderr, which Framework shows in the preview terminal.
+    run_bullet_paths = precalc_bullet_paths.get(pkl_path.stem)
+    if run_bullet_paths is None or len(run_bullet_paths) != len(point_dict):
+        print(f"{pkl_path.name}: no precalculated bullet paths, computing them (run build_bullet_paths.py)", file=sys.stderr)
+        run_bullet_paths = [None] * len(point_dict)
+
     last_index = len(point_dict) - 1
     runs = [
-        transform_run(run, level, is_coop=is_coop, has_next_run=index < last_index)
+        transform_run(run, level, is_coop=is_coop, has_next_run=index < last_index, bullet_paths=run_bullet_paths[index])
         for index, run in enumerate(point_dict)
     ]
     runs = [run for run in runs if run is not None]
@@ -85,8 +89,9 @@ def load_runs(pkl_path, level):
 
 def dump_playthroughs(level, play_data_dir):
     # every playthrough recording for one level, keyed by filename stem
+    precalc_bullet_paths = load_precalc_bullet_paths(level)
     playthroughs = {
-        pkl_path.stem: load_runs(pkl_path, level)
+        pkl_path.stem: load_runs(pkl_path, level, precalc_bullet_paths)
         for pkl_path in sorted(play_data_dir.glob("*.pkl"))
     }
     print(json.dumps(playthroughs))

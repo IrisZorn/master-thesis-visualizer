@@ -400,7 +400,7 @@ export async function createMapViewer({
   const showAggregateToggle = new Toggle(initialShowAggregate);
   const showHeatmapToggle = new Toggle(initialShowHeatmap);
 
-  // built from the aggregate across playthroughs (agg_coords_[level].json.py's
+  // built from the aggregate across playthroughs (build_aggregate_data.py's
   // aggregate_enemy_density), not from the run currently being scrubbed -- missing if the data
   // loader's cache predates that key, in which case the overlay simply stays empty. Level-wide
   // fallback, used before any stage data exists or on a level with no stages.

@@ -78,7 +78,7 @@ export const FOREST_FOLLIES_LEVEL_CONFIG = {
     "13": { owner: "enemy", enemyType: "11", color: "rgba(64, 224, 208, 0.9)" }, // shroom_cloud_purple -> shroom
   },
   enemyInstanceXThreshold: 170,
-  // matches build_enemy_full_paths.py's STATIONARY_DISTANCE_THRESHOLD: the distance within
+  // matches build_aggregate_data.py's STATIONARY_DISTANCE_THRESHOLD: the distance within
   // which a live shroom/tulip track is considered the same physical instance as an anchor
   stationaryInstanceThreshold: 200,
   startHp: 3,
