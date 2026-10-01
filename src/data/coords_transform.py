@@ -329,14 +329,36 @@ def build_bullet_shots(
     # 30-frame window holds many points at once (rapid fire). Measured ~1.8x faster on
     # forest_follies_2's own cuphead_bullet data (211s -> 115s), with byte-identical output to the
     # pure-Python version it replaced.
+    #
+    # Every candidate only ever touches points within 2*max_span of its first seed point (seed
+    # pair <= max_span apart, inliers within max_span of both seeds, refit window max_span past
+    # those), so the points split into clusters at every gap longer than that, and each cluster is
+    # solved on its own -- otherwise every accepted shot reruns the seed-pair search over the whole
+    # run. A cluster's shots come out exactly as the global search would pick them (the other
+    # clusters' candidates never change what it sees), only the order across clusters differs, so
+    # the result is sorted by start time.
     if not values:
         return []
 
     pts = sorted((t, x, y) for x, y, t in values if x is not None)
+    if not pts:
+        return []
     t_arr = np.array([p[0] for p in pts], dtype=float)
     x_arr = np.array([p[1] for p in pts], dtype=float)
     y_arr = np.array([p[2] for p in pts], dtype=float)
 
+    splits = np.flatnonzero(np.diff(t_arr) > 2 * max_span) + 1
+    shots = []
+    for ct, cx, cy in zip(np.split(t_arr, splits), np.split(x_arr, splits), np.split(y_arr, splits)):
+        shots.extend(_build_bullet_shots_cluster(
+            ct, cx, cy, min_speed, max_speed, max_span, threshold, min_inliers, min_dt
+        ))
+    shots.sort(key=lambda shot: shot[0][2])
+    return shots
+
+
+def _build_bullet_shots_cluster(t_arr, x_arr, y_arr, min_speed, max_speed, max_span, threshold, min_inliers, min_dt):
+    # build_bullet_shots' greedy line search over one time cluster of its sorted points
     shots = []
 
     while len(t_arr) >= min_inliers:
@@ -362,12 +384,17 @@ def build_bullet_shots(
                 if not _bullet_shot_plausible(model, a_t, b_t, min_speed, max_speed, max_span):
                     continue
 
-                w_lo = bisect_left(t_list, a_t - max_span)
-                w_hi = bisect_right(t_list, b_t + max_span)
+                # inliers have to lie within max_span of both seed points, i.e. in
+                # [b_t - max_span, a_t + max_span] -- slicing exactly that leaves only the
+                # residual to check
+                w_lo = bisect_left(t_list, b_t - max_span)
+                w_hi = bisect_right(t_list, a_t + max_span)
+                if w_hi - w_lo < min_inliers:
+                    continue
                 wt, wx, wy = t_arr[w_lo:w_hi], x_arr[w_lo:w_hi], y_arr[w_lo:w_hi]
                 px, py = x0 + vx * wt, y0 + vy * wt
                 resid = np.hypot(px - wx, py - wy)
-                mask = (resid < threshold) & (np.abs(wt - a_t) <= max_span) & (np.abs(wt - b_t) <= max_span)
+                mask = resid < threshold
                 count = int(mask.sum())
                 if count >= min_inliers:
                     candidates.append((w_lo, mask, count))

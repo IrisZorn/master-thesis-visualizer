@@ -1,4 +1,5 @@
 import pickle
+from multiprocessing import Pool
 
 from coords_transform import precalc_bullet_paths_path, transform_recording
 from levels import LEVELS, play_data_dir
@@ -7,7 +8,8 @@ from levels import LEVELS, play_data_dir
 # reconstructing them (coords_transform.build_bullet_shots' line search) takes minutes per level
 # and would otherwise rerun on every Framework load. Needs build_aggregate_data.py's
 # enemy_full_paths.pkl to be current, since transform_run (and with it the run window the bullets
-# are cut to) reads it. One run refreshes the cache of every level in levels.LEVELS.
+# are cut to) reads it. One run refreshes the cache of every level in levels.LEVELS. Recordings
+# are independent of each other, so they're spread over all CPU cores.
 
 
 def build_recording_bullet_paths(pkl_path, level):
@@ -26,12 +28,28 @@ def build_recording_bullet_paths(pkl_path, level):
     ]
 
 
+def _build_job(job):
+    # Pool worker -- takes the level by its LEVELS name, since a level is a module and can't be
+    # pickled over to the worker process
+    level_name, pkl_path = job
+    return build_recording_bullet_paths(pkl_path, LEVELS[level_name])
+
+
 if __name__ == "__main__":
-    for level in LEVELS.values():
+    jobs = [
+        (level_name, pkl_path)
+        for level_name, level in LEVELS.items()
+        for pkl_path in sorted(play_data_dir(level).glob("*.pkl"))
+    ]
+    with Pool() as pool:
+        results = pool.map(_build_job, jobs)
+
+    for level_name, level in LEVELS.items():
         # keyed by filename stem, same as run_coords_[level].json.py's playthroughs
         bullet_paths = {
-            pkl_path.stem: build_recording_bullet_paths(pkl_path, level)
-            for pkl_path in sorted(play_data_dir(level).glob("*.pkl"))
+            pkl_path.stem: result
+            for (job_level, pkl_path), result in zip(jobs, results)
+            if job_level == level_name
         }
 
         output_path = precalc_bullet_paths_path(level)
