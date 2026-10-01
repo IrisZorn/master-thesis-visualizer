@@ -12,5 +12,3 @@ blueberry=100,120
 tulip_bullet=70,70
 
 #TODO: look at clustering
-
-#TODO: setup server
