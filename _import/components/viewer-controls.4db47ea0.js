@@ -1,4 +1,4 @@
-import { clamp } from "./viewer-helpers.d11f403b.js";
+import { clamp } from "./viewer-helpers.1421b95f.js";
 
 export class Toggle {
   constructor(value = true) {
@@ -127,6 +127,53 @@ export function makeLegendGradientGlyph(colors, borderColor = "#666") {
   return glyph;
 }
 
+// one thick horizontal stripe per color, stacked top to bottom -- for a layer drawn as several
+// differently colored paths (e.g. the cup/mug aggregate routes), where a gradient would blend them
+export function makeLegendStripesGlyph(colors) {
+  const glyph = document.createElement("div");
+  Object.assign(glyph.style, {
+    width: "28px",
+    display: "flex",
+    flexDirection: "column",
+    gap: "2px",
+  });
+  for (const color of colors) {
+    const stripe = document.createElement("div");
+    Object.assign(stripe.style, {
+      height: "6px",
+      borderRadius: "3px",
+      background: color,
+    });
+    glyph.appendChild(stripe);
+  }
+  return glyph;
+}
+
+// mirrors the on-map bullet-direction arrows: a short line ending in a triangular head
+export function makeLegendArrowGlyph(color) {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("width", "28");
+  svg.setAttribute("height", "16");
+  svg.setAttribute("viewBox", "0 0 28 16");
+
+  const line = document.createElementNS(NS, "line");
+  line.setAttribute("x1", "3");
+  line.setAttribute("y1", "8");
+  line.setAttribute("x2", "18");
+  line.setAttribute("y2", "8");
+  line.setAttribute("stroke", color);
+  line.setAttribute("stroke-width", "4");
+  line.setAttribute("stroke-linecap", "round");
+
+  const head = document.createElementNS(NS, "path");
+  head.setAttribute("d", "M 16 2 L 27 8 L 16 14 z");
+  head.setAttribute("fill", color);
+
+  svg.append(line, head);
+  return svg;
+}
+
 export function createSliderMarkers({
   sliderMarkers,
   startTime,
@@ -249,21 +296,69 @@ export function drawStageBoundaryMarkers({ layer, startTime, maxTime, stageStart
 
 // one button per stage the run actually reached (stage_start_times leaves a stage null when the
 // run ended before it began) -- clicking jumps the timeslider to that stage's start via onSelect.
+// Styled to match the floating panels (see createCollapsiblePanel); setActiveStage highlights the
+// button of the stage playback is currently in, so the caller re-runs it on every render.
 export function createStageButtons({ stageStarts, stageNames = [], onSelect }) {
   const row = document.createElement("div");
-  row.style.display = "flex";
-  row.style.gap = "8px";
+  Object.assign(row.style, {
+    display: "flex",
+    flexWrap: "wrap",
+    justifyContent: "center",
+    gap: "8px",
+  });
+
+  const buttons = new Map(); // stage index -> button
+  let activeIndex = null;
+  let hoveredIndex = null;
+
+  function applyStyle(i) {
+    const button = buttons.get(i);
+    const active = i === activeIndex;
+    const hovered = i === hoveredIndex;
+    button.style.background = active ? (hovered ? "#1f2937" : "#374151") : (hovered ? "#f3f4f6" : "white");
+    button.style.color = active ? "white" : "#111827";
+    button.style.borderColor = active ? "#374151" : (hovered ? "#9ca3af" : "#ccc");
+  }
 
   stageStarts.forEach((t, i) => {
     if (t == null) return;
     const button = document.createElement("button");
     button.type = "button";
     button.textContent = stageNames[i] || `Stage ${i + 1}`;
+    Object.assign(button.style, {
+      border: "1px solid #ccc",
+      borderRadius: "4px",
+      boxShadow: "0 2px 8px rgba(0,0,0,0.12)",
+      padding: "5px 12px",
+      fontFamily: "sans-serif",
+      fontSize: "13px",
+      cursor: "pointer",
+      transition: "background 0.12s, border-color 0.12s, transform 0.06s",
+    });
     button.addEventListener("click", () => onSelect(t));
+    button.addEventListener("mouseenter", () => { hoveredIndex = i; applyStyle(i); });
+    button.addEventListener("mouseleave", () => {
+      hoveredIndex = null;
+      button.style.transform = "none";
+      applyStyle(i);
+    });
+    button.addEventListener("mousedown", () => { button.style.transform = "translateY(1px)"; });
+    button.addEventListener("mouseup", () => { button.style.transform = "none"; });
+
+    buttons.set(i, button);
+    applyStyle(i);
     row.appendChild(button);
   });
 
-  return row;
+  function setActiveStage(index) {
+    if (index === activeIndex) return;
+    const previous = activeIndex;
+    activeIndex = index;
+    if (buttons.has(previous)) applyStyle(previous);
+    if (buttons.has(index)) applyStyle(index);
+  }
+
+  return { row, setActiveStage };
 }
 
 export function createLegendRow({ label, color, getter, setter, glyphNode, onChange }) {

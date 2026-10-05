@@ -10,5 +10,3 @@ tulip=120,170
 daisy=140,190
 blueberry=100,120
 tulip_bullet=70,70
-
-#TODO: look at clustering

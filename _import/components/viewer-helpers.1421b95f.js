@@ -10,6 +10,12 @@ export function fadeOpacity(time, t, fadeDistance) {
   return clamp(1 - dist / fadeDistance, 0, 1);
 }
 
+// two-sided counterpart of fadeOpacity for player/enemy trails: fully opaque at `time`, fading
+// out fadeDistance both behind and ahead of it, so a trail also previews where it's heading next.
+export function trailOpacity(time, t, fadeDistance) {
+  return clamp(1 - Math.abs(time - t) / fadeDistance, 0, 1);
+}
+
 // highest stage index whose start has passed by `time`, or null on a level with no stages
 // (stageStarts empty) -- stage 0's start is always defined (the run's own stable start).
 export function stageIndexAt(stageStarts, time) {

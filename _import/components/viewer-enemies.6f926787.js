@@ -1,5 +1,5 @@
 import * as d3 from "../../_node/d3@7.9.0/index.ca4e4e1f.js";
-import { clamp, fadeOpacity, getLastTimedPoint, pointAtFraction, stageIndexAt, validTimedPoints } from "./viewer-helpers.d11f403b.js";
+import { clamp, fadeOpacity, getLastTimedPoint, pointAtFraction, stageIndexAt, validTimedPoints } from "./viewer-helpers.1421b95f.js";
 
 // live (currently detected) enemies are drawn in turquoise; inactive ones in a grey that fades out
 const ACTIVE_ENEMY_COLOR = "rgba(64, 224, 208, 0.9)";
@@ -90,6 +90,13 @@ export function createEnemyVisualBuilder({
     if (elapsed <= 0) return 1;
     return 1 - clamp(elapsed / GREY_FADE_WINDOW, 0, 1);
   }
+
+  // bridging time for a stationary enemy's own bullets: the detector often only picks a shot up
+  // once it has drifted clear of its shooter, by which point the shooter itself may already have
+  // gone quiet (forest_follies_2's first shroom cloud is first seen 44 time units after its
+  // shroom's last detection). A shot first seen within this long after its shooter's last
+  // detection still counts as that shooter's, so the shooter stays visible until the shot is gone.
+  const BULLET_BRIDGING_TIME = 50;
 
   // Across a detection gap the last known position is held rather than dropping to the resting
   // position and back -- during a short gap the enemy has barely moved (median ~66px for gaps of
@@ -328,12 +335,13 @@ export function createEnemyVisualBuilder({
           const lastDetection = getLastDetectionTime(liveTrack, 3);
           const instanceIsActive = isInstanceActive(liveTrack, 3);
           // a dead enemy still greys out right away, but its fade is held off until the last of
-          // its own already-fired bullets (and so its direction arrow) is gone -- only shots fired
-          // before it went quiet, not a later one that just happens to be attributed to it
+          // its own already-fired bullets (and so its direction arrow) is gone -- only shots first
+          // seen before it went quiet or within BULLET_BRIDGING_TIME after, not a much later one
+          // that just happens to be attributed to it
           let fadeStart = lastDetection;
           if (lastDetection != null) {
             for (const [start, end] of bulletPresenceByAnchor.get(`${enemyType}:${index}`) || []) {
-              if (start <= lastDetection && end > fadeStart) fadeStart = end;
+              if (start <= lastDetection + BULLET_BRIDGING_TIME && end > fadeStart) fadeStart = end;
             }
           }
           const visibility = instanceVisibility(fadeStart);

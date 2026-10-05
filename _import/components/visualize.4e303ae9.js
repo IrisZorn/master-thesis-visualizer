@@ -1,12 +1,17 @@
 import * as d3 from "../../_node/d3@7.9.0/index.ca4e4e1f.js";
 import { parseEnemySizes } from "./level-config.d1c252d6.js";
-import { Toggle, createCollapsiblePanel, createLegendRow, createSliderMarkers, createStageButtons, drawStageBoundaryMarkers, makeLegendGlyph, makeLegendGradientGlyph } from "./viewer-controls.02ef3d38.js";
-import { createEnemyVisualBuilder, getEnemyGlyphSize, getEnemyGlyphSource } from "./viewer-enemies.43697f16.js";
-import { buildBulletArrows, enemyBulletPresenceByAnchor } from "./viewer-bullets.337ce04e.js";
+import { Toggle, createCollapsiblePanel, createLegendRow, createSliderMarkers, createStageButtons, drawStageBoundaryMarkers, makeLegendArrowGlyph, makeLegendGlyph, makeLegendGradientGlyph, makeLegendStripesGlyph } from "./viewer-controls.4db47ea0.js";
+import { createEnemyVisualBuilder, getEnemyGlyphSize, getEnemyGlyphSource } from "./viewer-enemies.6f926787.js";
+import { buildBulletArrows, enemyBulletPresenceByAnchor } from "./viewer-bullets.b188bec3.js";
 import { BAND_BLUR_RADIUS, HEATMAP_COLORS, createEnemyHeatmapBuilder } from "./viewer-heatmap.2ff45294.js";
-import { clamp, fadeOpacity, findCurrentIndex, flattenEnemyPaths, makePathD, stageIndexAt, validTimedPoints } from "./viewer-helpers.d11f403b.js";
+import { clamp, fadeOpacity, findCurrentIndex, flattenEnemyPaths, makePathD, stageIndexAt, trailOpacity, validTimedPoints } from "./viewer-helpers.1421b95f.js";
 
 const NS = "http://www.w3.org/2000/svg";
+
+// aggregated route color, shared by the main map, the minimap and the legend's Aggregate entry.
+// There's only one aggregate: build_aggregate_data.py pools every player's route into it and
+// stores it under the primary (cup) player's type.
+const AGG_CUP_COLOR = "rgba(255, 0, 0, 0.35)";
 
 // the map image, plus a white wash on top that bleaches it so paths/heatmap drawn over it read
 // more clearly
@@ -214,7 +219,6 @@ export async function createMapViewer({
   // when one is available, so the pooled path/heatmap actually change as playback crosses a stage
   // boundary rather than always showing the whole level's aggregate.
   const baseAggCup = aggr_players?.[levelConfig.playerTypes.cup] || [];
-  const baseAggMug = aggr_players?.[levelConfig.playerTypes.mug] || [];
   const deathSprites = {
     C: spriteUrls.cupDeath,
     M: spriteUrls.mugDeath
@@ -231,7 +235,14 @@ export async function createMapViewer({
     cup: { w: 60, h: 70 },
     mug: { w: 68, h: 70 }
   };
-  const miniPlayerMarkerRadius = 15;
+  // minimap player glyphs are drawn at a fixed size (1.5x the main map's) rather than scaled by
+  // minimapScale, which would shrink them to an unreadable few pixels; a red/blue disc behind
+  // each sprite keeps cup/mug distinguishable against the map
+  const miniPlayerGlyphSize = {
+    cup: { w: playerGlyphSize.cup.w * 1.5, h: playerGlyphSize.cup.h * 1.5 },
+    mug: { w: playerGlyphSize.mug.w * 1.5, h: playerGlyphSize.mug.h * 1.5 }
+  };
+  const miniPlayerDiscRadius = 63;
   // some levels have no hit-reaction detection stream at all (e.g. Wally Warbles) -- without one
   // there's nothing to base an HP count on, so the HP halo and its legend entry are hidden
   // entirely rather than showing a halo that's always full HP.
@@ -313,7 +324,7 @@ export async function createMapViewer({
   // skips this whole block.
   const stageStarts = run.stage_starts || [];
   const stageNames = levelConfig.stageNames || [];
-  let stageButtonsRow = null;
+  let stageButtons = null;
 
   if (stageStarts.length) {
     const stageMarkersLayer = document.createElement('div');
@@ -327,7 +338,7 @@ export async function createMapViewer({
 
     drawStageBoundaryMarkers({ layer: stageMarkersLayer, startTime, maxTime, stageStarts, stageNames });
 
-    stageButtonsRow = createStageButtons({
+    stageButtons = createStageButtons({
       stageStarts,
       stageNames,
       onSelect: (t) => {
@@ -347,6 +358,7 @@ export async function createMapViewer({
   const showEnemyToggle = new Toggle(true);
   const showAggregateToggle = new Toggle(initialShowAggregate);
   const showHeatmapToggle = new Toggle(initialShowHeatmap);
+  const showBulletToggle = new Toggle(true);
 
   // built from the aggregate across playthroughs (build_aggregate_data.py's
   // aggregate_enemy_density), not from the run currently being scrubbed -- missing if the data
@@ -512,12 +524,12 @@ export async function createMapViewer({
   function render() {
     // pick the currently active stage's own pooled path (falls back to the level-wide aggregate
     // before any stage starts, or on a level with no stages at all) -- shadows the module-level
-    // baseAggCup/baseAggMug for the rest of this render pass so every use below (main overlay,
+    // baseAggCup for the rest of this render pass so every use below (main overlay,
     // minimap) automatically follows the same choice.
     const stageIndex = stageIndexAt(stageStarts, currentTime);
+    stageButtons?.setActiveStage(stageIndex);
     const stageAggregate = stageIndex != null ? aggr_players?.stages?.[stageIndex] : null;
     const aggCup = stageAggregate ? (stageAggregate[levelConfig.playerTypes.cup] || []) : baseAggCup;
-    const aggMug = stageAggregate ? (stageAggregate[levelConfig.playerTypes.mug] || []) : baseAggMug;
 
     const cupIndex = findCurrentIndex(cup, currentTime);
     const mugIndex = findCurrentIndex(mug, currentTime);
@@ -618,11 +630,12 @@ export async function createMapViewer({
       );
     }
 
-    // prepare segment data for cup and mug (only within WINDOW_DELTA range behind currentTime,
-    // never ahead of it)
+    // prepare segment data for cup and mug (only within WINDOW_DELTA range around currentTime,
+    // both behind and ahead of it -- see trailOpacity)
     function makeSegments(points, color, who) {
       const strokeWidth = 6;
       const start = currentTime - WINDOW_DELTA;
+      const end = currentTime + WINDOW_DELTA;
       const segs = [];
       let fallbackSegment = null;
       for (let i = 1; i < points.length; i++) {
@@ -633,10 +646,10 @@ export async function createMapViewer({
         const t2 = b[2];
         if (t1 == null || t2 == null) continue;
         const tmid = (t1 + t2) / 2;
-        const segment = { id: `${who}-${i-1}`, x1: a[0], y1: a[1], x2: b[0], y2: b[1], points: [[a[0], a[1]], [b[0], b[1]]], color, strokeWidth, opacity: fadeOpacity(currentTime, tmid, WINDOW_DELTA), who, t: tmid };
+        const segment = { id: `${who}-${i-1}`, x1: a[0], y1: a[1], x2: b[0], y2: b[1], points: [[a[0], a[1]], [b[0], b[1]]], color, strokeWidth, opacity: trailOpacity(currentTime, tmid, WINDOW_DELTA), who, t: tmid };
         if (!fallbackSegment) fallbackSegment = segment;
         if (Math.max(t1, t2) < start) continue;
-        if (Math.min(t1, t2) > currentTime) continue;
+        if (Math.min(t1, t2) > end) continue;
         segs.push(segment);
       }
       if (!segs.length && fallbackSegment) {
@@ -761,10 +774,7 @@ export async function createMapViewer({
 
     const aggregatePaths = [];
     if (showAggregateToggle.value && aggCup.length > 1) {
-      aggregatePaths.push({ id: 'agg-cup', points: aggCup, color: 'rgba(255, 0, 0, 0.35)', width: 10 });
-    }
-    if (showAggregateToggle.value && aggMug.length > 1) {
-      aggregatePaths.push({ id: 'agg-mug', points: aggMug, color: 'rgba(0, 0, 255, 0.35)', width: 10 });
+      aggregatePaths.push({ id: 'agg-cup', points: aggCup, color: AGG_CUP_COLOR, width: 10 });
     }
 
     const aggregateSel = mainSel.selectAll('.aggregate-path').data(aggregatePaths, d => d.id);
@@ -785,13 +795,13 @@ export async function createMapViewer({
 
     const enemyVisuals = buildEnemyVisuals();
 
-    const bulletArrows = buildBulletArrows({
+    const bulletArrows = showBulletToggle.value ? buildBulletArrows({
       time: currentTime,
       bulletPathsByType,
       bulletConfig,
       enemyAnchorsByType,
       playerPositions: bulletPlayerPositions,
-    });
+    }) : [];
 
     const bulletArrowSel = mainSel.selectAll('.bullet-arrow').data(bulletArrows, d => d.id);
     bulletArrowSel.join(
@@ -1044,14 +1054,14 @@ export async function createMapViewer({
 
       const miniPlayers = [];
       if (showCupToggle.value && isFiniteCoord(displayCupX) && isFiniteCoord(displayCupY)) {
-        miniPlayers.push({ id: 'mini-cup-player', x: displayCupX * scaleX, y: displayCupY * scaleY, color: 'red', r: miniPlayerMarkerRadius });
+        miniPlayers.push({ id: 'mini-cup-player', x: displayCupX * scaleX, y: displayCupY * scaleY, color: 'red', sprite: playerSprites.cup, ...miniPlayerGlyphSize.cup });
       }
       if (showMugToggle.value && isFiniteCoord(displayMugX) && isFiniteCoord(displayMugY)) {
-        miniPlayers.push({ id: 'mini-mug-player', x: displayMugX * scaleX, y: displayMugY * scaleY, color: 'blue', r: miniPlayerMarkerRadius });
+        miniPlayers.push({ id: 'mini-mug-player', x: displayMugX * scaleX, y: displayMugY * scaleY, color: 'blue', sprite: playerSprites.mug, ...miniPlayerGlyphSize.mug });
       }
 
       function makePolyPoints(arr) { return arr.map(d=>`${d.x},${d.y}`).join(' '); }
-      for (const [className, aggPoints, color] of [['mini-agg-cup', aggCup, 'rgba(255,0,0,0.35)'], ['mini-agg-mug', aggMug, 'rgba(0,0,255,0.35)']]) {
+      for (const [className, aggPoints, color] of [['mini-agg-cup', aggCup, AGG_CUP_COLOR]]) {
         const miniPoints = aggPoints.filter(p => p && p[0] != null).map(p => ({ x: p[0] * scaleX, y: p[1] * scaleY }));
         miniSel.selectAll(`.${className}`).data(showAggregateToggle.value && miniPoints.length > 1 ? [miniPoints] : []).join(
           enter => enter.append('polyline').attr('class', className)
@@ -1064,14 +1074,21 @@ export async function createMapViewer({
 
       const miniPlayerSel = miniSel.selectAll('.mini-player').data(miniPlayers, d => d.id);
       miniPlayerSel.join(
-        enter => enter.append('circle').attr('class', 'mini-player')
-          .attr('cx', d => d.x).attr('cy', d => d.y).attr('r', d => d.r)
-          .attr('fill', d => d.color)
-          .attr('stroke', 'white')
-          .attr('stroke-width', 2),
-        update => update
-          .attr('cx', d => d.x).attr('cy', d => d.y).attr('r', d => d.r)
-          .attr('fill', d => d.color),
+        enter => {
+          const g = enter.append('g').attr('class', 'mini-player')
+            .attr('transform', d => `translate(${d.x},${d.y})`);
+          g.append('circle')
+            .attr('r', miniPlayerDiscRadius)
+            .attr('fill', d => d.color);
+          g.append('image')
+            .attr('href', d => d.sprite)
+            .attr('xlink:href', d => d.sprite)
+            .attr('preserveAspectRatio', 'xMidYMid meet')
+            .attr('width', d => d.w).attr('height', d => d.h)
+            .attr('x', d => -d.w / 2).attr('y', d => -d.h / 2);
+          return g;
+        },
+        update => update.attr('transform', d => `translate(${d.x},${d.y})`),
         exit => exit.remove()
       );
 
@@ -1126,7 +1143,7 @@ export async function createMapViewer({
 
   if (showMinimap) container.append(miniSvg);
   container.append(mainWrapper, sliderWrapper);
-  if (stageButtonsRow) container.append(stageButtonsRow);
+  if (stageButtons) container.append(stageButtons.row);
 
   const rerenderFromControls = () => {
     try {
@@ -1140,12 +1157,18 @@ export async function createMapViewer({
   // compact left-top legend owned by the viewer; each row toggles one layer
   const { panel: leftLegend, body: legendBody } = createCollapsiblePanel('Legend', { left: '10px' });
   legendBody.appendChild(createLegendRow({ label: 'Cup', color: '#ff0000', getter: () => showCupToggle.value, setter: v => { showCupToggle.value = v; }, onChange: rerenderFromControls }));
-  legendBody.appendChild(createLegendRow({ label: 'Mug', color: '#0000ff', getter: () => showMugToggle.value, setter: v => { showMugToggle.value = v; }, onChange: rerenderFromControls }));
+  // a single-player recording has mug merged away (see hasMug above), so there's nothing to toggle
+  if (hasMug) {
+    legendBody.appendChild(createLegendRow({ label: 'Mug', color: '#0000ff', getter: () => showMugToggle.value, setter: v => { showMugToggle.value = v; }, onChange: rerenderFromControls }));
+  }
   const enemyLegendSpriteKey = levelConfig.enemyLegendSpriteKey
     ?? Object.values(levelConfig.enemyGlyphSources).find((spriteKey) => spriteUrls[spriteKey]);
   legendBody.appendChild(createLegendRow({ label: 'Enemies', color: '#40e0d0', getter: () => showEnemyToggle.value, setter: v => { showEnemyToggle.value = v; }, glyphNode: makeLegendGlyph(enemyLegendSpriteKey ? spriteUrls[enemyLegendSpriteKey] : hitSprites.C, 'rgba(64, 224, 208, 0.18)', '#40e0d0'), onChange: rerenderFromControls }));
   legendBody.appendChild(createLegendRow({ label: 'Enemy heatmap', color: HEATMAP_COLORS[HEATMAP_COLORS.length - 1], getter: () => showHeatmapToggle.value, setter: v => { showHeatmapToggle.value = v; }, glyphNode: makeLegendGradientGlyph(HEATMAP_COLORS), onChange: rerenderFromControls }));
-  legendBody.appendChild(createLegendRow({ label: 'Aggregate', color: '#6b7280', getter: () => showAggregateToggle.value, setter: v => { showAggregateToggle.value = v; }, onChange: rerenderFromControls }));
+  if (Object.keys(bulletConfig).length > 0) {
+    legendBody.appendChild(createLegendRow({ label: 'Bullet direction', color: '#ff0000', getter: () => showBulletToggle.value, setter: v => { showBulletToggle.value = v; }, glyphNode: makeLegendArrowGlyph('#ff0000'), onChange: rerenderFromControls }));
+  }
+  legendBody.appendChild(createLegendRow({ label: 'Aggregate', color: AGG_CUP_COLOR, getter: () => showAggregateToggle.value, setter: v => { showAggregateToggle.value = v; }, glyphNode: makeLegendStripesGlyph([AGG_CUP_COLOR]), onChange: rerenderFromControls }));
   legendBody.appendChild(createLegendRow({ label: 'Death', color: '#000000', getter: () => showDeathToggle.value, setter: v => { showDeathToggle.value = v; }, glyphNode: makeLegendGlyph(deathSprites.C, 'transparent', 'black'), onChange: rerenderFromControls }));
   if (hasHitTracking) {
     legendBody.appendChild(createLegendRow({ label: 'Hit', color: '#000000', getter: () => showHitToggle.value, setter: v => { showHitToggle.value = v; }, glyphNode: makeLegendGlyph(hitSprites.C, 'transparent', 'black'), onChange: rerenderFromControls }));
