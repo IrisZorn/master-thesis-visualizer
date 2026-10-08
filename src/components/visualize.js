@@ -1,8 +1,8 @@
 import * as d3 from "d3";
 import { parseEnemySizes } from "./level-config.js";
 import { Toggle, createCollapsiblePanel, createLegendRow, createSliderMarkers, createStageButtons, drawStageBoundaryMarkers, makeLegendArrowGlyph, makeLegendGlyph, makeLegendGradientGlyph, makeLegendStripesGlyph } from "./viewer-controls.js";
-import { createEnemyVisualBuilder, getEnemyGlyphSize, getEnemyGlyphSource } from "./viewer-enemies.js";
-import { buildBulletArrows, enemyBulletPresenceByAnchor } from "./viewer-bullets.js";
+import { createEnemyVisualBuilder, getEnemyGlyphSize, getEnemyGlyphSource, greyFadeWindow } from "./viewer-enemies.js";
+import { buildBulletArrows, buildEnemyShots, enemyBulletPresenceByAnchor } from "./viewer-bullets.js";
 import { BAND_BLUR_RADIUS, HEATMAP_COLORS, createEnemyHeatmapBuilder } from "./viewer-heatmap.js";
 import { clamp, fadeOpacity, findCurrentIndex, flattenEnemyPaths, makePathD, stageIndexAt, trailOpacity, validTimedPoints } from "./viewer-helpers.js";
 
@@ -212,8 +212,11 @@ export async function createMapViewer({
       enemyAnchorsByType[config.enemyType] = aggr_players?.enemies?.[config.enemyType]?.anchors || [];
     }
   }
-  // lets a dead shroom's fade wait until its own bullet's arrow is gone (see viewer-enemies.js)
-  const bulletPresenceByAnchor = enemyBulletPresenceByAnchor({ bulletPathsByType, bulletConfig, enemyAnchorsByType });
+  // every individual enemy shot, split and attributed to its shooter once up front -- drives both
+  // the per-shot arrows and the shooter's fade
+  const enemyShots = buildEnemyShots({ bulletPathsByType, bulletConfig, enemyAnchorsByType });
+  // lets a dead shroom's fade wait until its own shot stops being detected (see viewer-enemies.js)
+  const bulletPresenceByAnchor = enemyBulletPresenceByAnchor(enemyShots);
   // level-wide fallback, used before any stage data exists or on a level with no stages at all
   // (aggr_players.stages absent) -- render() below picks the active stage's own aggregate instead
   // when one is available, so the pooled path/heatmap actually change as playback crosses a stage
@@ -403,7 +406,7 @@ export async function createMapViewer({
     bulletPresenceByAnchor,
   });
 
-  // Enemies Hit stat: a raw disappearance (see computeEnemyDisappearances) only counts as a hit
+  // Enemy Deaths stat: a raw disappearance (see computeEnemyDisappearances) only counts as a death
   // if the enemy's last known x position was still within (or ahead of) the camera's viewport at
   // that moment -- otherwise it's just the camera scrolling past a still-alive enemy, which looks
   // identical to a hit from the detection data alone. cameraLeftEdgeAtTime mirrors render()'s own
@@ -439,7 +442,7 @@ export async function createMapViewer({
   // level alive (e.g. Wally Warbles' nailbird routinely exits off the static screen's edge), not a
   // hit, and buildEnemyVisuals skips its grey fade on screen for the same reason. What's left here
   // only needs the camera-scroll check below.
-  const enemyHitEvents = computeEnemyDisappearances()
+  const enemyDeathEvents = computeEnemyDisappearances()
     .filter((event) => levelConfig.countableEnemyTypes.has(event.type))
     .filter((event) => {
       const leftEdge = cameraLeftEdgeAtTime(event.timestamp);
@@ -487,7 +490,7 @@ export async function createMapViewer({
   const mugHitsStat = (hasHitTracking && hasMug) ? createStatRow('Mugman Hits') : null;
   const cupDeathsStat = hasCup ? createStatRow('Cuphead Deaths') : null;
   const mugDeathsStat = hasMug ? createStatRow('Mugman Deaths') : null;
-  const enemyHitsStat = createStatRow('Enemies Hit');
+  const enemyDeathsStat = createStatRow('Enemy Deaths');
 
   // HP helpers (START_HP default 3)
   function hpAtTime(who, t) {
@@ -799,7 +802,8 @@ export async function createMapViewer({
       time: currentTime,
       bulletPathsByType,
       bulletConfig,
-      enemyAnchorsByType,
+      enemyShots,
+      fadeWindow: greyFadeWindow(WINDOW_DELTA),
       playerPositions: bulletPlayerPositions,
     }) : [];
 
@@ -916,6 +920,16 @@ export async function createMapViewer({
         const sprite = this.querySelector('.enemy-glyph-sprite');
         if (sprite) sprite.setAttribute('src', getEnemyGlyphSource(d.type, enemySprites, spriteUrls, levelConfig.enemySpritesFallbackKey));
       });
+
+    // an enemy bullet's arrow sits directly under its shooter's glyph: above everything that
+    // glyph is above, below the glyph itself. Re-done every render since stacking within
+    // mainLayers otherwise just follows creation order (a glyph created later ends up above trails).
+    const enemyGlyphNodes = new Map();
+    mainSel.selectAll('.enemy-glyph').each(function(d) { enemyGlyphNodes.set(d.id, this); });
+    mainSel.selectAll('.bullet-arrow').each(function(d) {
+      const glyphNode = d.glyphId ? enemyGlyphNodes.get(d.glyphId) : null;
+      if (glyphNode && this.nextSibling !== glyphNode) glyphNode.parentNode.insertBefore(this, glyphNode);
+    });
 
     const segSel = mainSel.selectAll('.segment').data(allSegs, d => d.id);
     segSel.join(
@@ -1115,7 +1129,7 @@ export async function createMapViewer({
     if (mugHitsStat) mugHitsStat.valueEl.textContent = String(mugHit.filter(p => p[2] <= currentTime).length);
     if (cupDeathsStat) cupDeathsStat.valueEl.textContent = String(cupDeath.filter(p => p[2] <= currentTime).length);
     if (mugDeathsStat) mugDeathsStat.valueEl.textContent = String(mugDeath.filter(p => p[2] <= currentTime).length);
-    enemyHitsStat.valueEl.textContent = String(enemyHitEvents.filter(t => t <= currentTime).length);
+    enemyDeathsStat.valueEl.textContent = String(enemyDeathEvents.filter(t => t <= currentTime).length);
   }
 
   /* ---------------- SLIDER EVENTS ---------------- */

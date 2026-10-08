@@ -2,9 +2,15 @@ import * as d3 from "d3";
 import { clamp, fadeOpacity, getLastTimedPoint, pointAtFraction, stageIndexAt, validTimedPoints } from "./viewer-helpers.js";
 
 // live (currently detected) enemies are drawn in turquoise; inactive ones in a grey that fades out
-const ACTIVE_ENEMY_COLOR = "rgba(64, 224, 208, 0.9)";
-function inactiveEnemyColor(alpha) {
+// (also used by viewer-bullets.js for enemy bullet arrows, which grey/fade the same way)
+export const ACTIVE_ENEMY_COLOR = "rgba(64, 224, 208, 0.9)";
+export function inactiveEnemyColor(alpha) {
   return `rgba(148, 163, 184, ${alpha.toFixed(2)})`;
+}
+
+// how long an inactive enemy (or enemy bullet arrow) takes to fade from fully visible to gone
+export function greyFadeWindow(windowDelta) {
+  return windowDelta * 2;
 }
 
 export function getEnemyGlyphSource(enemyType, enemySprites, spriteUrls, fallbackKey) {
@@ -35,7 +41,7 @@ export function createEnemyVisualBuilder({
   enemyStageIndex = {},
   mapWidth = null,
   // `${enemyType}:${anchorIndex}` -> [start, end] windows during which one of that stationary
-  // enemy's own bullets (and so its direction arrow) is present -- see viewer-bullets.js's
+  // enemy's own shots is detected (its direction arrow turquoise) -- see viewer-bullets.js's
   // enemyBulletPresenceByAnchor. Empty on a level with no enemy bullet arrows.
   bulletPresenceByAnchor = new Map(),
 }) {
@@ -83,7 +89,7 @@ export function createEnemyVisualBuilder({
   // once an instance/track goes inactive it keeps fading the longer it's been since last seen,
   // all the way to fully invisible, instead of snapping to one fixed grey and staying there
   // forever.
-  const GREY_FADE_WINDOW = windowDelta * 2;
+  const GREY_FADE_WINDOW = greyFadeWindow(windowDelta);
   function instanceVisibility(lastDetection) {
     if (lastDetection == null) return 0;
     const elapsed = currentTimeProvider() - lastDetection;
@@ -335,9 +341,10 @@ export function createEnemyVisualBuilder({
           const lastDetection = getLastDetectionTime(liveTrack, 3);
           const instanceIsActive = isInstanceActive(liveTrack, 3);
           // a dead enemy still greys out right away, but its fade is held off until the last of
-          // its own already-fired bullets (and so its direction arrow) is gone -- only shots first
-          // seen before it went quiet or within BULLET_BRIDGING_TIME after, not a much later one
-          // that just happens to be attributed to it
+          // its own already-fired shots stops being detected -- the moment that shot's arrow
+          // greys and starts the same fade, so the two fade out together. Only shots first seen
+          // before it went quiet or within BULLET_BRIDGING_TIME after, not a much later one that
+          // just happens to be attributed to it
           let fadeStart = lastDetection;
           if (lastDetection != null) {
             for (const [start, end] of bulletPresenceByAnchor.get(`${enemyType}:${index}`) || []) {
@@ -367,7 +374,7 @@ export function createEnemyVisualBuilder({
           const last = getLastDetectionWithDirection(track.points, 2);
           // flew off the edge of the map alive -- skip the grey fade entirely (not a
           // disappearance to show at all) instead of drawing it like a possible death. See
-          // computeEnemyDisappearances, which excludes the same event from Enemies Hit.
+          // computeEnemyDisappearances, which excludes the same event from Enemy Deaths.
           if (last && isLeavingMapEdge(last.point[0], last.dx)) continue;
         }
         const visibility = instanceVisibility(lastDetection);
@@ -407,9 +414,9 @@ export function createEnemyVisualBuilder({
   }
 
   // One-time (not per-frame) list of every enemy instance/track/chain-segment's own "went
-  // undetected" event -- used by visualize.js to build the Enemies Hit stat. A disappearance that
+  // undetected" event -- used by visualize.js to build the Enemy Deaths stat. A disappearance that
   // isLeavingMapEdge (still moving into the map's own boundary) is skipped entirely here, not just
-  // filtered out downstream: it's not a hit, it's the enemy flying off the level alive, and
+  // filtered out downstream: it's not a death, it's the enemy flying off the level alive, and
   // buildEnemyVisuals below applies the exact same isLeavingMapEdge check to skip the grey fade for
   // it on screen too, so the two stay in agreement. Reports every remaining disappearance across
   // the whole run, not just ones already reached by currentTime, so the caller can filter by its

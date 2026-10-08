@@ -67,7 +67,7 @@ MOVING_MINIMIZING_ENEMIES = {
 # bullet types tracked separately from ENEMY_KEYS: they get their own per-shot tracks (see
 # coords_transform.transform_run) via the same build_enemy_paths reconnection logic as
 # MOVING_ENEMIES, for the bullet-direction-arrow feature -- but they're kept out of ENEMY_KEYS
-# itself so they never end up in the enemy density heatmap or the Enemies Hit stat, neither of
+# itself so they never end up in the enemy density heatmap or the Enemy Deaths stat, neither of
 # which makes sense for a bullet.
 BULLET_KEYS = {
     cuphead_bullet,
