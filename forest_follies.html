@@ -15,13 +15,13 @@
 <link rel="modulepreload" href="./_observablehq/client.08e4feb1.js">
 <link rel="modulepreload" href="./_observablehq/runtime.607a8173.js">
 <link rel="modulepreload" href="./_observablehq/stdlib.60afab10.js">
-<link rel="modulepreload" href="./_import/components/visualize.4e303ae9.js">
+<link rel="modulepreload" href="./_import/components/visualize.45b0a17c.js">
 <link rel="modulepreload" href="./_import/components/level-config.d1c252d6.js">
 <link rel="modulepreload" href="./_import/components/level-config-forest-follies.d79e0eb8.js">
 <link rel="modulepreload" href="./_observablehq/stdlib/inputs.07ab08cb.js">
 <link rel="modulepreload" href="./_import/components/viewer-controls.4db47ea0.js">
-<link rel="modulepreload" href="./_import/components/viewer-enemies.6f926787.js">
-<link rel="modulepreload" href="./_import/components/viewer-bullets.b188bec3.js">
+<link rel="modulepreload" href="./_import/components/viewer-enemies.ebbd2b62.js">
+<link rel="modulepreload" href="./_import/components/viewer-bullets.6d5e1844.js">
 <link rel="modulepreload" href="./_import/components/viewer-heatmap.2ff45294.js">
 <link rel="modulepreload" href="./_import/components/viewer-helpers.1421b95f.js">
 <link rel="modulepreload" href="./_node/d3@7.9.0/index.ca4e4e1f.js">
@@ -66,7 +66,7 @@
 import {define} from "./_observablehq/client.08e4feb1.js";
 import {registerFile} from "./_observablehq/stdlib.60afab10.js";
 
-registerFile("./data/agg_coords_forest_follies.json", {"name":"./data/agg_coords_forest_follies.json","mimeType":"application/json","path":"./_file/data/agg_coords_forest_follies.7c79bdd6.json","lastModified":1791214367621,"size":924705});
+registerFile("./data/agg_coords_forest_follies.json", {"name":"./data/agg_coords_forest_follies.json","mimeType":"application/json","path":"./_file/data/agg_coords_forest_follies.7c79bdd6.json","lastModified":1791444883903,"size":924705});
 registerFile("./data/resources/forest_follies_stitched.png", {"name":"./data/resources/forest_follies_stitched.png","mimeType":"image/png","path":"./_file/data/resources/forest_follies_stitched.5e05c41b.png","lastModified":1768465529422,"size":36935834});
 registerFile("./data/resources/sprites/forest_follies/acorn.png", {"name":"./data/resources/sprites/forest_follies/acorn.png","mimeType":"image/png","path":"./_file/data/resources/sprites/forest_follies/acorn.b6b11518.png","lastModified":1761640147389,"size":18362});
 registerFile("./data/resources/sprites/forest_follies/acorn_machine.png", {"name":"./data/resources/sprites/forest_follies/acorn_machine.png","mimeType":"image/png","path":"./_file/data/resources/sprites/forest_follies/acorn_machine.43779b37.png","lastModified":1761640147099,"size":128644});
@@ -84,10 +84,10 @@ registerFile("./data/resources/sprites/forest_follies/sprite_sizes.txt", {"name"
 registerFile("./data/resources/sprites/forest_follies/toothy.png", {"name":"./data/resources/sprites/forest_follies/toothy.png","mimeType":"image/png","path":"./_file/data/resources/sprites/forest_follies/toothy.f88d5832.png","lastModified":1761640149898,"size":37910});
 registerFile("./data/resources/sprites/forest_follies/tulip.png", {"name":"./data/resources/sprites/forest_follies/tulip.png","mimeType":"image/png","path":"./_file/data/resources/sprites/forest_follies/tulip.80c330ee.png","lastModified":1761640149608,"size":20674});
 registerFile("./data/resources/sprites/forest_follies/tulip_bullet.png", {"name":"./data/resources/sprites/forest_follies/tulip_bullet.png","mimeType":"image/png","path":"./_file/data/resources/sprites/forest_follies/tulip_bullet.4d6be987.png","lastModified":1790697922427,"size":4215});
-registerFile("./data/run_coords_forest_follies.json", {"name":"./data/run_coords_forest_follies.json","mimeType":"application/json","path":"./_file/data/run_coords_forest_follies.fa8a4c49.json","lastModified":1791214368411,"size":1970837});
+registerFile("./data/run_coords_forest_follies.json", {"name":"./data/run_coords_forest_follies.json","mimeType":"application/json","path":"./_file/data/run_coords_forest_follies.fa8a4c49.json","lastModified":1791444884694,"size":1970837});
 
 define({id: "56b0148e", inputs: ["FileAttachment"], outputs: ["createMapViewer","createLevelConfig","FOREST_FOLLIES_LEVEL_CONFIG","aggr_players","mapUrl","enemySizesText","spriteUrls"], body: async (FileAttachment) => {
-const [{createMapViewer}, {createLevelConfig}, {FOREST_FOLLIES_LEVEL_CONFIG}] = await Promise.all([import("./_import/components/visualize.4e303ae9.js"), import("./_import/components/level-config.d1c252d6.js"), import("./_import/components/level-config-forest-follies.d79e0eb8.js")]);
+const [{createMapViewer}, {createLevelConfig}, {FOREST_FOLLIES_LEVEL_CONFIG}] = await Promise.all([import("./_import/components/visualize.45b0a17c.js"), import("./_import/components/level-config.d1c252d6.js"), import("./_import/components/level-config-forest-follies.d79e0eb8.js")]);
 
 // aggregate across every playthrough (see data/agg_coords_[level].json.py)
 const aggr_players = await FileAttachment("./data/agg_coords_forest_follies.json").json();
@@ -186,7 +186,7 @@ return {runIndex,currentViewer};
 </main>
 <footer id="observablehq-footer">
 <nav><a rel="prev" href="./"><span>Visualizations</span></a><a rel="next" href="./wally_warbles"><span>Aviary Action</span></a></nav>
-<div>Built with <a href="https://observablehq.com/" target="_blank" rel="noopener noreferrer">Observable</a> on <a title="2026-10-05T17:32:44">Oct 5, 2026</a>.</div>
+<div>Built with <a href="https://observablehq.com/" target="_blank" rel="noopener noreferrer">Observable</a> on <a title="2026-10-08T09:34:39">Oct 8, 2026</a>.</div>
 </footer>
 </div>
 </body>

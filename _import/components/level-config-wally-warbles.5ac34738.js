@@ -62,8 +62,8 @@ export const WALLY_WARBLES_LEVEL_CONFIG = {
   // Forest Follies excludes its own bullets/start marker
   trackedEnemyTypes: ["17", "20", "8", "11", "0", "3", "4", "5", "6", "12", "13", "15", "19", "22"],
   // matches constants_wally_warbles.py's ENEMIES -- the subset of trackedEnemyTypes that's
-  // actually an enemy rather than a JUNK pickup, so the Enemies Hit stat (visualize.js) doesn't
-  // count an apple/egg/heart/etc. disappearing as if it were a hit.
+  // actually an enemy rather than a JUNK pickup, so the Enemy Deaths stat (visualize.js) doesn't
+  // count an apple/egg/heart/etc. disappearing as if it were a death.
   countableEnemyTypes: ["17", "20", "8", "11"],
   // see level-config-forest-follies.js's bulletConfig -- only the player's own shots here, matching
   // constants_wally_warbles.py's BULLET_KEYS (enemy bullets come from moving bosses, which the
